@@ -2,8 +2,8 @@
   "_comment": "LeRobot pi0.5 LoRA 微调配置（参考 lerobot/examples/flux3/lora.json 格式）",
 
   "policy": {
-    "path": "lerobot/pi05",
-    "_comment_path": "HuggingFace Hub 上的预训练权重 ID。可换成本地路径，如 outputs/my_checkpoint"
+    "path": "lerobot/pi05_libero_base",
+    "_comment_path": "HuggingFace Hub 上的预训练权重 ID。pi05_libero_base 是在 LIBERO 上预训练的版本，比 pi05_base 更适合作为 LIBERO LoRA 微调的起点。可换成本地路径，如 outputs/my_checkpoint"
   },
 
   "dataset": {
