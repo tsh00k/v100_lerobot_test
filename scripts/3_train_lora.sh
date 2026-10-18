@@ -13,9 +13,12 @@
 #   export HTTPS_PROXY=socks5h://127.0.0.1:17897        # 首次下载数据集需要
 #   在 tmux 里运行！
 #
-# 用法：
-#   STEPS=200 NUM_GPUS=1 bash scripts/3_train_lora.sh   # 冒烟测试
-#   bash scripts/3_train_lora.sh                        # 正式训练（6 卡）
+# 用法（推荐通过 Makefile）：
+#   make smoke                       # 冒烟测试：1 卡 100 步
+#   make train                       # 正式训练：6 卡
+#   STEPS=200 NUM_GPUS=1 bash scripts/3_train_lora.sh   # 也可直接调用
+#
+# wandb：默认开启，checkpoint 不作为 artifact 上传（单个 >16GB）
 # ===================================================================
 
 set -euo pipefail
@@ -27,13 +30,21 @@ LR="${LR:-1e-4}"                       # LoRA 常用比全量微调（pi05 默�
 LORA_R="${LORA_R:-32}"
 JOB_NAME="${JOB_NAME:-pi05_lora_libero}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/${JOB_NAME}_$(date +%Y%m%d_%H%M%S)}"  # 必须是不存在的目录
-WANDB="${WANDB:-false}"
+SAVE_FREQ="${SAVE_FREQ:-5000}"         # 最后一步无论如何都会保存
+LOG_FREQ="${LOG_FREQ:-50}"
+WANDB="${WANDB:-true}"                 # 需要 WANDB_API_KEY（或 wandb login）
+WANDB_PROJECT="${WANDB_PROJECT:-pi05_v100}"
 
 # 单卡不加 --multi_gpu
 MULTI_GPU_FLAG=""
 [[ "${NUM_GPUS}" -gt 1 ]] && MULTI_GPU_FLAG="--multi_gpu"
 
-echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R}"
+if [[ "${WANDB}" == "true" && -z "${WANDB_API_KEY:-}" && ! -f ~/.netrc ]]; then
+    echo "❌ WANDB=true 但没有找到 WANDB_API_KEY 或 ~/.netrc。export WANDB_API_KEY=... 或 WANDB=false"
+    exit 1
+fi
+
+echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} wandb=${WANDB}(${WANDB_PROJECT})"
 echo "输出目录：${OUTPUT_DIR}"
 
 # accelerate 负责：起 N 个进程、DDP 包装、梯度同步、混合精度
@@ -59,11 +70,14 @@ accelerate launch \
     \
     --batch_size="${BATCH_SIZE}" \
     --steps="${STEPS}" \
-    --save_freq=5000 \
-    --log_freq=50 \
+    --save_freq="${SAVE_FREQ}" \
+    --log_freq="${LOG_FREQ}" \
     --output_dir="${OUTPUT_DIR}" \
     --job_name="${JOB_NAME}" \
-    --wandb.enable="${WANDB}"
+    \
+    --wandb.enable="${WANDB}" \
+    --wandb.project="${WANDB_PROJECT}" \
+    --wandb.disable_artifact=true
 
 echo ""
 echo "✅ 训练完成：${OUTPUT_DIR}"
