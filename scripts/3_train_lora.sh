@@ -14,7 +14,7 @@
 #   在 tmux 里运行！
 #
 # 用法（推荐通过 Makefile）：
-#   make smoke                       # 冒烟测试：1 卡 100 步
+#   make smoke                       # 冒烟测试：6 卡 20 步
 #   make train                       # 正式训练：6 卡
 #   STEPS=200 NUM_GPUS=1 bash scripts/3_train_lora.sh   # 也可直接调用
 #
