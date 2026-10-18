@@ -31,10 +31,11 @@ import os
 
 import torch
 
-MODEL_ID   = os.getenv("HF_MODEL_ID", "lerobot/pi05_libero_base")
-LOCAL_CKPT = os.getenv("LOCAL_CHECKPOINT", "")
-DEVICE     = os.getenv("DEVICE", "cuda:0")
-TASK       = os.getenv("TASK", "pick up the black bowl and place it on the plate")
+# 用 `or` 而不是 getenv 的默认值：make 会把未传的变量 export 成空字符串
+MODEL_ID   = os.getenv("HF_MODEL_ID") or "lerobot/pi05_libero_base"
+LOCAL_CKPT = os.getenv("LOCAL_CHECKPOINT") or ""
+DEVICE     = os.getenv("DEVICE") or "cuda:0"
+TASK       = os.getenv("TASK") or "pick up the black bowl and place it on the plate"
 
 
 def load(checkpoint: str, device: str):
