@@ -34,6 +34,10 @@ SAVE_FREQ="${SAVE_FREQ:-5000}"         # 最后一步无论如何都会保存
 LOG_FREQ="${LOG_FREQ:-50}"
 WANDB="${WANDB:-true}"                 # 需要 WANDB_API_KEY（或 wandb login）
 WANDB_PROJECT="${WANDB_PROJECT:-pi05_v100}"
+EPISODES="${EPISODES:-}"               # 如 "[0,1,2]"；只下载/使用这些 episode。留空 = 全量（35 GB）
+
+EPISODES_ARG=()
+[[ -n "${EPISODES}" ]] && EPISODES_ARG=(--dataset.episodes="${EPISODES}")
 
 # 单卡不加 --multi_gpu
 MULTI_GPU_FLAG=""
@@ -45,6 +49,7 @@ if [[ "${WANDB}" == "true" && -z "${WANDB_API_KEY:-}" && ! -f ~/.netrc ]]; then
 fi
 
 echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} wandb=${WANDB}(${WANDB_PROJECT})"
+echo "episodes：${EPISODES:-全部}"
 echo "输出目录：${OUTPUT_DIR}"
 
 # accelerate 负责：起 N 个进程、DDP 包装、梯度同步、混合精度
@@ -56,6 +61,7 @@ accelerate launch \
     -m lerobot.scripts.lerobot_train \
     \
     --dataset.repo_id=HuggingFaceVLA/libero \
+    "${EPISODES_ARG[@]}" \
     \
     --policy.path=lerobot/pi05_libero_base \
     --policy.dtype=float32 \
