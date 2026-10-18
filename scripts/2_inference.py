@@ -54,33 +54,36 @@ def load_policy(model_id: str, local_ckpt: str, device: str, dtype: torch.dtype)
 
 def make_dummy_libero_observation(device: str, dtype: torch.dtype) -> dict:
     """
-    构造一个符合 LIBERO 格式的虚拟观测。
+    构造符合 lerobot/pi05_libero_base 期望的虚拟观测。
 
-    【观测空间说明】
-    LIBERO 环境提供两路摄像头图像 + 机器人本体状态：
-    - agentview_rgb   : 第三人称视角摄像头（看整个场景）
-    - eye_in_hand_rgb : 腕部摄像头（看末端执行器附近）
-    - state           : 本体感受（proprioception），即各关节角度、速度等
+    【键名和形状来源】
+    模型的 config.image_features 字段声明了它期望的输入键名和形状。
+    报错信息直接暴露了这个字段，因此键名和形状以模型 config 为准，
+    而不是以原始 LIBERO 环境的摄像头名称为准：
 
-    【数组形状说明（PyTorch 约定）】
-    大多数深度学习框架期望输入是一个"批"（batch），即多个样本同时处理。
-    即使只有 1 个样本，也要保留批维度：
-      - 图像：(batch=1, channels=3, height=224, width=224)
-      - 状态：(batch=1, state_dim=8)
+      observation.images.image         → (3, 256, 256)  主摄像头
+      observation.images.image2        → (3, 256, 256)  第二摄像头
+      observation.images.empty_camera_0 → (3, 224, 224)  占位摄像头（无图像时填零）
 
-    【注意】
-    实际使用时，这里的 state_dim 和图像尺寸必须与数据集的观测空间严格一致。
-    可以通过 LeRobot 的数据集加载器自动获取这些维度（见 README）。
+    【查看任意模型期望的键名】
+    加载模型后运行：
+      print(policy.config.image_features)
+      print(policy.config.state_feature)
+
+    【数组形状】批维度始终保留：(batch=1, C, H, W)
     """
     obs = {
-        # 图像：随机噪声（实际使用时换成真实摄像头帧）
-        "observation.images.agentview_rgb": torch.zeros(
+        "observation.images.image": torch.zeros(
+            1, 3, 256, 256, dtype=dtype, device=device
+        ),
+        "observation.images.image2": torch.zeros(
+            1, 3, 256, 256, dtype=dtype, device=device
+        ),
+        # empty_camera_0：pi05_libero_base 用于填充"不存在的第三路摄像头"，传全零即可
+        "observation.images.empty_camera_0": torch.zeros(
             1, 3, 224, 224, dtype=dtype, device=device
         ),
-        "observation.images.eye_in_hand_rgb": torch.zeros(
-            1, 3, 224, 224, dtype=dtype, device=device
-        ),
-        # 本体状态：LIBERO 机械臂通常是 7 个关节 + 1 个夹爪 = 8 维
+        # state_dim 以 config.state_feature.shape 为准；pi05_libero_base 为 8
         "observation.state": torch.zeros(1, 8, dtype=dtype, device=device),
     }
     return obs
@@ -107,6 +110,11 @@ def main():
     dtype = getattr(torch, DTYPE_STR)
 
     policy = load_policy(MODEL_ID, LOCAL_CKPT, DEVICE, dtype)
+
+    print("\n模型期望的输入特征（键名和形状）：")
+    for k, v in policy.config.image_features.items():
+        print(f"  {k}: {v.shape}")
+    print(f"  observation.state: {policy.config.state_feature.shape}")
 
     print("\n构造虚拟观测（实际使用时替换为真实环境数据）...")
     obs = make_dummy_libero_observation(DEVICE, dtype)
