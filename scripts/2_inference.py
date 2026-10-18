@@ -21,7 +21,7 @@ import os
 import torch
 
 # ——— 可配置项（通过环境变量覆盖）———
-MODEL_ID        = os.getenv("HF_MODEL_ID", "lerobot/pi05_base")
+MODEL_ID        = os.getenv("HF_MODEL_ID", "lerobot/pi05_libero_base")
 LOCAL_CKPT      = os.getenv("LOCAL_CHECKPOINT", "")   # 如果填了，优先使用本地权重
 DEVICE          = os.getenv("DEVICE", "cuda:0")
 DTYPE_STR       = os.getenv("DTYPE", "float32")       # V100 用 float32
