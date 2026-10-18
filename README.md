@@ -31,6 +31,7 @@ LIBERO 是一个**机器人操作基准数据集**，包含多个任务套件：
 pi05_v100/
 ├── .gitignore               # git 忽略规则
 ├── README.md                # 本文件
+├── Makefile                 # 快捷入口：make check / infer / smoke / train
 ├── install.sh               # 项目初始化（建目录、HF 缓存指向持久化存储、可选 editable lerobot）
 ├── docs/
 │   ├── lerobot_pi05_guide.md   # LeRobot 框架与 pi0.5 使用说明
