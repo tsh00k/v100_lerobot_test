@@ -95,7 +95,7 @@ def main():
 
     policy.reset()  # 清空 action 队列（每个 episode 开始时都要调用）
     with torch.inference_mode():
-        # 一次前向得到整个 chunk：(B, chunk_size, max_action_dim)，未反归一化
+        # 一次前向得到整个 chunk：(B, chunk_size, action_dim)，未反归一化
         chunk = policy.predict_action_chunk(batch)
         # select_action：内部维护一个队列，队列空时推理一个 chunk，之后每次弹出一步
         action = policy.select_action(batch)

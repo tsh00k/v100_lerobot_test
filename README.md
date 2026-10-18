@@ -31,15 +31,17 @@ LIBERO 是一个**机器人操作基准数据集**，包含多个任务套件：
 pi05_v100/
 ├── .gitignore               # git 忽略规则
 ├── README.md                # 本文件
-├── environment.yml          # conda 环境定义（Python + 系统依赖）
-├── install.sh               # 安装 PyTorch + LeRobot（在 conda 环境激活后运行）
-├── scripts/
-│   ├── 1_check_setup.py     # 步骤一：验证环境是否正确
-│   ├── 2_inference.py       # 步骤二：加载 pi0.5，运行推理
-│   └── 3_train_lora.sh      # 步骤三：多卡 LoRA 微调
-└── configs/
-    └── lora_libero.json     # LoRA 训练超参数配置
+├── install.sh               # 项目初始化（建目录、HF 缓存指向持久化存储、可选 editable lerobot）
+├── docs/
+│   ├── lerobot_pi05_guide.md   # LeRobot 框架与 pi0.5 使用说明
+│   └── proxy_and_network.md    # 反向隧道 / 代理配置
+└── scripts/
+    ├── 1_check_setup.py     # 步骤一：验证环境
+    ├── 2_inference.py       # 步骤二：加载 pi0.5，走 pre/post-processor 跑推理
+    └── 3_train_lora.sh      # 步骤三：多卡 LoRA 微调（超参写在脚本里，环境变量可覆盖）
 ```
+
+运行环境（Python / PyTorch / LeRobot 0.6.1 / peft）由 `v100_mirror` 镜像提供，本仓库不负责装依赖。
 
 > 参考项目结构来自：
 > - [huggingface/lerobot](https://github.com/huggingface/lerobot)（`src/lerobot/scripts/`、`examples/`）
@@ -51,8 +53,8 @@ pi05_v100/
 
 | 目录/文件 | 作用 | 类比 |
 |-----------|------|------|
-| `environment.yml` / `pyproject.toml` | 声明依赖，确保可复现 | 食谱的"原材料清单" |
-| `configs/` | 超参数配置，与代码分离 | 旋钮面板，不改代码就能调参 |
+| `Dockerfile` / `pyproject.toml` | 声明依赖，确保可复现（本项目在镜像里） | 食谱的"原材料清单" |
+| `configs/` 或启动脚本里的参数 | 超参数，与代码分离 | 旋钮面板，不改代码就能调参 |
 | `scripts/` | 对外暴露的入口脚本 | 程序的"操作手册" |
 | `src/` 或主库（LeRobot） | 核心模型、数据、训练逻辑 | 引擎 |
 | `outputs/` | 训练产物（不提交 git） | 实验记录 |

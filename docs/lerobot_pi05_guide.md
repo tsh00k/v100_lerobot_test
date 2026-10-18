@@ -1,300 +1,242 @@
 # LeRobot 框架与 pi0.5 使用指南
 
-> 本文档面向已有 Python/PyTorch 基础的读者，重点解释 LeRobot 框架的设计逻辑和 pi0.5 模型的特点，而非重复介绍通用深度学习知识。
->
-> 版本参考：lerobot==0.6.1，pi0.5（`lerobot/pi05`）
+> 面向已会 PyTorch 的读者，只讲 LeRobot 和 pi0.5 本身。
+> 版本：`lerobot==0.6.1`，模型 `lerobot/pi05_libero_base`，数据集 `HuggingFaceVLA/libero`。
+> 文中参数名、默认值均对照服务器上安装的 0.6.1 源码核实；源码路径前缀 `P=/opt/conda/envs/lerobot/lib/python3.12/site-packages/lerobot`。
+> 遇到不确定的接口，**先查源码或 `--help`，不要猜**。
 
 ---
 
-## 一、pi0.5 模型特点
+## 一、pi0.5 模型
 
-### 1.1 架构概览
-
-pi0.5 是一个 **VLA（Vision-Language-Action）模型**，由三个部分组成：
+### 1.1 结构
 
 ```
-图像（多路摄像头）  ──→  SigLIP 视觉编码器  ──┐
-语言指令（文本）   ──→  Gemma2 语言模型     ──→  Transformer 主干  ──→  Flow Matching 动作头  ──→  动作序列
-机器人状态（关节角）──→  线性投影层         ──┘
+图像 (多相机) ─▶ SigLIP 视觉编码器 ─┐
+prompt tokens ─────────────────────▶ PaliGemma (gemma_2b) ─▶ KV cache ─┐
+                                                                         ▼
+                          噪声动作 + 时间步 ─▶ action expert (gemma_300m) ─▶ 速度场 ─▶ 迭代去噪 ─▶ action chunk
 ```
 
-- **视觉编码器**：SigLIP（Google，对比学习预训练），将每帧图像编码为 token 序列
-- **语言主干**：Gemma2（2B 参数量级），理解任务指令并与视觉 token 交叉注意力
-- **动作头**：Flow Matching（连续正则化流），从高斯噪声迭代去噪，生成动作分布的样本
+- **VLM 主干**：PaliGemma（`paligemma_variant='gemma_2b'`），处理图像和语言。
+- **Action expert**：一个独立的小 Gemma（`action_expert_variant='gemma_300m'`），和主干共享注意力，专门输出动作。
+- **动作头**：Flow Matching。推理时从高斯噪声出发，积分 `num_inference_steps=10` 步得到动作。
+- 总参数量 **4.14B**；fp32 下光权重就占约 16.5 GB。
 
-Flow Matching 与 Diffusion Policy 的关系：两者思路相似（都是从噪声中恢复信号），Flow Matching 使用直线流轨迹，推理步数更少（通常 10 步，比 DDPM 的 100 步快得多）。
+pi0.5 和 pi0 的一个关键区别：**state 不是用连续向量输入的，而是离散化成文本 token 拼进 prompt**（见 2.3）。
 
-### 1.2 输入空间
+### 1.2 关键配置（`PI05Config`，`P/policies/pi05/configuration_pi05.py`）
 
-| 输入键（LeRobot 约定） | 形状 | 说明 |
-|----------------------|------|------|
-| `observation.images.<camera_name>` | `(B, C=3, H=224, W=224)` | 每路摄像头一个键，RGB，已归一化到 `[-1, 1]` |
-| `observation.state` | `(B, state_dim)` | 机器人本体感受，LIBERO 中 `state_dim=8`（7 个关节角 + 1 个夹爪宽度） |
-| `task` | `list[str]`，长度 B | 自然语言任务描述，如 `"pick up the red cube"` |
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `chunk_size` | 50 | 一次预测未来 50 步动作 |
+| `n_action_steps` | 50 | 每个 chunk 实际执行多少步再重新推理 |
+| `max_state_dim` / `max_action_dim` | 32 / 32 | 内部统一 pad 到 32 维（LIBERO 实际 state 8 维、action 7 维） |
+| `num_inference_steps` | 10 | flow matching 去噪步数 |
+| `image_resolution` | (224, 224) | 图像在模型内部 resize+pad 到这个尺寸 |
+| `tokenizer_max_length` | 200 | prompt 最大 token 数 |
+| `dtype` | `float32` | V100 保持 float32 |
+| `gradient_checkpointing` | False | 训练时建议打开，省显存 |
+| `freeze_vision_encoder` / `train_expert_only` | False / False | 全量微调时可用来冻结部分模块 |
+| `optimizer_lr` | 2.5e-5 | 默认学习率（全量微调用的） |
+| `normalization_mapping` | VISUAL: IDENTITY，STATE/ACTION: QUANTILES | state/action 用分位数归一化到 [-1, 1] |
+| `push_to_hub` | **True** | 不关的话，没设 `repo_id` 时训练启动会直接报错 |
 
-摄像头名称由数据集决定，LIBERO 常见配置：
-- `agentview_rgb`：第三人称全景摄像头
-- `eye_in_hand_rgb`：腕部摄像头
+### 1.3 输入输出（以 `pi05_libero_base` 为例）
 
-### 1.3 输出空间：Action Chunk
+运行 `scripts/2_inference.py` 会把这些打印出来（`policy.config.input_features` / `output_features`）：
 
-pi0.5 **不输出单步动作**，而是一次性预测未来 N 步的动作序列，称为 **Action Chunk**：
+| 键 | 形状 | 说明 |
+|---|---|---|
+| `observation.images.image` | (3, 256, 256) | 第三人称相机 |
+| `observation.images.image2` | (3, 256, 256) | 腕部相机 |
+| `observation.images.empty_camera_0` | (3, 224, 224) | 占位相机，不提供时模型会自动填空图 |
+| `observation.state` | (8,) | 本体状态 |
+| `task` | str | 自然语言任务 |
+| **输出** `action` | (7,) | 末端位姿增量 6 维 + 夹爪 1 维 |
 
-```
-输出形状：(B, chunk_size, action_dim)
-```
+### 1.4 Action chunk 与 `select_action`
 
-- `chunk_size`（LeRobot 中对应 `n_action_steps`）：默认 **50**，即每次推理给出未来 50 步的动作
-- `action_dim`：取决于机器人，LIBERO 为 **7**（6 维末端执行器位姿 + 1 维夹爪）
-
-**为什么要用 Action Chunk？**
-
-单步推理（观测→动作→观测→动作）存在两个问题：
-1. 摄像头帧率（~30 Hz）远低于控制频率（~200 Hz），每步都要重新推理成本高
-2. 模型在时序上只看到当前帧，难以规划需要多步协调的动作
-
-Action Chunk 让模型一次规划 N 步，执行时只取前几步（Temporal Ensemble 策略），下一次推理时再更新——在延迟和平滑性之间取得平衡。
+- `policy.predict_action_chunk(batch)` → `(B, 50, 7)`：一次前向得到完整 chunk。模型内部按 32 维计算，返回前已经裁回真实的 action 维度，但**还没有反归一化**。
+- `policy.select_action(batch)` → `(B, 7)`：内部维护一个动作队列，队列空了才推理一次 chunk，之后每次调用弹出一步。所以在 50 步里只有第 1 步真正跑了模型。
+- 每个 episode 开始前要调用 `policy.reset()` 清空队列。
 
 ---
 
-## 二、LeRobot 框架设计
-
-### 2.1 核心抽象层次
+## 二、LeRobot 的三段式推理管线
 
 ```
-LeRobotDataset          ← 数据层：统一格式加载各种机器人数据集
-    ↓
-Policy（如 PI05Policy）  ← 模型层：统一接口，屏蔽模型内部差异
-    ↓
-lerobot_train.py        ← 训练层：数据加载、优化、日志、checkpoint
-    ↓
-PeftConfig（可选）       ← 适配层：LoRA 等参数高效微调
+raw frame ──preprocessor──▶ batch ──policy──▶ action ──postprocessor──▶ 真实尺度动作
 ```
 
-### 2.2 Policy 统一接口
+### 2.1 为什么不能直接把张量喂给 policy
 
-所有 LeRobot Policy 都继承自 `PreTrainedPolicy`，暴露以下方法：
+policy 只认**已经处理好**的 batch：state 已归一化、prompt 已分词、数据已经在 GPU 上。这些处理都由 processor pipeline 完成，并且和 checkpoint 一起保存（`policy_preprocessor.json` / `policy_postprocessor.json`，归一化统计量也在里面）。
 
 ```python
-# 推理（不更新权重）
-action = policy.select_action(batch: dict) -> Tensor
+from lerobot.policies.factory import make_pre_post_processors
+from lerobot.policies.pi05 import PI05Policy
 
-# 训练前向（计算 loss）
-output = policy.forward(batch: dict) -> PolicyOutput
-
-# 保存/加载（HuggingFace 标准接口）
-policy.save_pretrained(path)
-policy = Policy.from_pretrained(path_or_hub_id, torch_dtype=...)
+policy = PI05Policy.from_pretrained(ckpt).to("cuda").eval()
+pre, post = make_pre_post_processors(
+    policy.config, pretrained_path=ckpt,
+    preprocessor_overrides={"device_processor": {"device": "cuda"}},
+)
+batch = pre(frame)            # frame：无 batch 维的原始观测 + "task"
+action = post(policy.select_action(batch))
 ```
 
-`select_action` 和 `forward` 接受同一个 `batch` 字典，键名与数据集的观测/动作键一一对应。
+### 2.2 pi0.5 preprocessor 的步骤（`P/policies/pi05/processor_pi05.py`）
 
-### 2.3 配置系统（draccus）
+1. `rename_observations`：键名对齐
+2. `add_batch_dim`：加 batch 维
+3. `RelativeActionsProcessorStep`：可选，相对动作（默认关闭）
+4. `normalize`：state/action 做 QUANTILES 归一化
+5. `Pi05PrepareStateTokenizerProcessorStep`：state 离散化成 256 档，拼出 prompt
+6. `TokenizerProcessorStep`：用 **`google/paligemma-3b-pt-224`** 的 tokenizer 分词 → `observation.language.tokens` / `attention_mask`
+7. `to_device`
 
-LeRobot 用 `draccus` 库做配置管理，核心思想是**类型安全的 dataclass**——所有超参都是 Python 类，不是裸字典。
+postprocessor：`unnormalize` → `AbsoluteActions` → `to_cpu`。
 
-配置通过命令行参数传入，格式为 `--section.key=value`：
+### 2.3 pi0.5 的 prompt 格式
 
-```bash
-python -m lerobot.scripts.lerobot_train \
-  --policy.type=pi05 \
-  --dataset.repo_id=lerobot/libero_spatial_no_noops \
-  --training.num_steps=50000
+```
+Task: pick up the black bowl and place it on the plate, State: 128 131 97 255 0 12 200 64;
+Action: 
 ```
 
-也可以用 JSON 文件配合命令行覆盖（见下文训练脚本部分）。
+state 归一化到 [-1, 1] 后用 `np.digitize` 分成 256 档，再写成文本。所以 **normalize 必须排在 tokenizer 前面**，手动 tokenize 一定会出错。
+
+### 2.4 原始 frame 的格式要求
+
+- 图像：float，CHW，值域 **[0, 1]**（模型内部会转成 [-1, 1]）
+- state：真实物理量（不要自己归一化）
+- `task`：字符串
+- 不要自己加 batch 维
+
+### 2.5 gated 依赖
+
+`google/paligemma-3b-pt-224` 是 gated repo（需要人工审批）。推理和训练都要用它的 tokenizer，所以要先在网页上申请访问，并且 `export HF_TOKEN=...`。
 
 ---
 
-## 三、训练脚本详解
+## 三、训练：`lerobot-train`
 
-### 3.1 `lerobot_train` 的核心参数
+入口：`lerobot-train` 等价于 `python -m lerobot.scripts.lerobot_train`。
+配置类：`TrainPipelineConfig`（`P/configs/train.py`），由 draccus 解析，命令行写法是 `--a.b=value`。
 
-以下是与本项目相关的常用参数，按功能分组：
+### 3.1 参数分组（真实字段名）
 
-**数据集**
-```bash
---dataset.repo_id=lerobot/libero_spatial_no_noops
-# 从 HuggingFace Hub 下载 LIBERO 数据集（会缓存到 HF_HOME/hub/）
-
---dataset.image_transforms.enable=true
-# 启用图像增强（随机裁剪、色彩抖动），有助于泛化
+**顶层**（注意：没有 `training.` 前缀）
+```
+--batch_size=4          # 每卡
+--steps=30000
+--save_freq=5000
+--log_freq=50
+--num_workers=4
+--seed=1000
+--output_dir=...        # 必须是不存在的目录，否则报 FileExistsError（除非 --resume=true）
+--job_name=...
+--resume=false
 ```
 
-**模型**
-```bash
---policy.type=pi05
-# 指定使用 pi0.5 策略
-
---policy.path=lerobot/pi05
-# 预训练权重来源（Hub ID 或本地路径）
+**dataset**
+```
+--dataset.repo_id=HuggingFaceVLA/libero
 ```
 
-**训练**
-```bash
---training.num_steps=50000      # 总训练步数
---training.batch_size=4         # 每卡 batch size
---training.lr=1e-4              # 学习率
---training.grad_clip_norm=10    # 梯度裁剪（防止梯度爆炸）
---training.save_freq=5000       # 每 N 步保存一次 checkpoint
---training.log_freq=100         # 每 N 步打印一次日志
+**policy**（`--policy.path` 加载预训练模型，其余 `--policy.*` 覆盖它的 config）
 ```
-
-**精度（V100 关键）**
-```bash
---training.mixed_precision=no   # V100 不支持 bf16，必须关闭
+--policy.path=lerobot/pi05_libero_base
+--policy.dtype=float32
+--policy.gradient_checkpointing=true
+--policy.optimizer_lr=1e-4
+--policy.scheduler_decay_steps=30000
+--policy.push_to_hub=false
 ```
-> 注意：mixed_precision 在训练脚本中控制，accelerate 中也需对应设置。两者都设为 `no` / `false`，以 accelerate 的设置为准（它是上层控制器）。
+`use_policy_training_preset=True`（默认）表示优化器和学习率调度直接用 policy config 里的 `optimizer_*` / `scheduler_*`，所以学习率要通过 `--policy.optimizer_lr` 改。
 
-**LoRA**
-```bash
+**peft**（`PeftConfig`，`P/configs/default.py`）
+```
 --peft.method_type=LORA
 --peft.r=32
---peft.lora_alpha=32
+--peft.lora_alpha=32      # 默认 None → peft 库默认 8，r=32 时缩放只有 0.25，建议显式设成 r
+--peft.target_modules=... # 不填就用 pi05 的默认值，见 3.3
 ```
 
-**输出**
+**wandb**
+```
+--wandb.enable=false
+```
+
+精度：**不由 lerobot 参数控制**，由 `accelerate launch --mixed_precision=no` 控制（训练循环里用的是 `accelerator.autocast()`）。
+
+### 3.2 多卡：accelerate
+
 ```bash
---output_dir=outputs/pi05_lora_libero
---wandb.project=pi05_v100        # W&B 项目名
+accelerate launch --multi_gpu --num_processes=6 --mixed_precision=no \
+    -m lerobot.scripts.lerobot_train  <上面的参数>
 ```
+- 每张卡一个进程，各自持有一份完整模型（DDP）
+- 有效 batch = `batch_size × num_processes`
+- lerobot 内部会创建 `Accelerator`，用它做 backward、梯度裁剪和 autocast
 
-### 3.2 多卡训练：accelerate 的角色
+### 3.3 pi0.5 默认的 LoRA 作用位置
 
-```bash
-accelerate launch \
-    --num_processes=6 \        # 启动 6 个进程，分别对应 6 块 GPU
-    --mixed_precision=no \     # 关闭混合精度（V100 fp32）
-    -m lerobot.scripts.lerobot_train \
-    # ... 以上 lerobot 参数
-```
-
-**accelerate 做了什么：**
-1. 以 `torchrun` 方式启动多个进程，每个进程绑定一块 GPU
-2. 自动包装模型为 `DistributedDataParallel (DDP)`
-3. 自动同步梯度（每步结束后 all-reduce）
-4. 统一管理 `optimizer.step()` 和 mixed precision
-
-**DDP 数据并行的逻辑：**
-- 每块 GPU 持有**完整的模型副本**
-- `batch_size=4` 且 `num_processes=6` → 实际有效 batch size = **24**
-- 梯度在所有 GPU 之间平均，等效于用 24 个样本计算一次梯度更新
-
----
-
-## 四、LoRA 微调原理与配置
-
-### 4.1 LoRA 在 pi0.5 中作用于哪里
-
-LeRobot 的 PEFT 实现通过 HuggingFace `peft` 库，将 LoRA 应用于 **Transformer 主干的注意力层**（Query、Key、Value、Output 矩阵）。视觉编码器和动作头默认冻结。
-
-### 4.2 关键超参解释
-
-```json
-{
-  "peft": {
-    "method_type": "LORA",
-    "r": 32,
-    "lora_alpha": 32
-  }
-}
-```
-
-- **`r`（rank，秩）**：LoRA 分解的低秩维度。r=32 表示在原始权重矩阵 W 旁边插入两个矩阵 A∈ℝ^{d×32} 和 B∈ℝ^{32×d}，权重更新 ΔW = BA。r 越大，表达能力越强，但训练参数越多。
-- **`lora_alpha`**：实际缩放系数 = `lora_alpha / r`。`r=32, alpha=32` → 缩放 = 1.0。若设 `alpha=64, r=32` → 缩放 = 2.0，相当于放大学习率。通常先保持 `alpha == r`。
-
-### 4.3 显存估算（V100 32GB，fp32）
-
-| 阶段 | 估算显存占用/卡 |
-|------|--------------|
-| 模型参数（fp32） | ~14–16 GB |
-| 梯度（仅 LoRA 参数，fp32） | ~0.5–1 GB |
-| 优化器状态（Adam，LoRA 参数） | ~1–2 GB |
-| Activation（batch=4，图像序列） | ~6–8 GB |
-| **合计** | **~22–27 GB** |
-
-batch=4 在 32 GB 卡上有一定余量；如果 OOM，先将 batch 降到 2。
-
----
-
-## 五、环境变量参考
-
-运行脚本前可能需要设置以下变量（在 shell 中 `export`，不要写入代码文件）：
-
-| 变量 | 用途 | 示例 |
-|------|------|------|
-| `HF_TOKEN` | 下载 gated 模型（pi0.5 需要申请访问权限） | `export HF_TOKEN=hf_xxx` |
-| `HF_HOME` | HuggingFace 缓存根目录（权重、数据集） | `export HF_HOME=/persistent/hf_cache` |
-| `WANDB_API_KEY` | W&B 训练监控 | `export WANDB_API_KEY=xxx` |
-| `CUDA_VISIBLE_DEVICES` | 限制使用哪些 GPU（如只用 GPU 0,1） | `export CUDA_VISIBLE_DEVICES=0,1` |
-
-> `HF_HOME` 由 `install.sh` 写入 `~/.bashrc`（持久化）。
-> `HF_TOKEN`、`WANDB_API_KEY` 含敏感信息，**只在 shell 会话中 `export`，不写进任何文件**。
-
-`os.getenv` 的读取来源即进程启动时继承的 shell 环境，层级为：
-`/etc/environment` → `~/.bashrc` → 当前 shell `export` → 命令行内联 `VAR=val python ...`（后者覆盖前者）。
-
----
-
-## 六、数据集：LIBERO
-
-LIBERO 在 HuggingFace Hub 上有多个子集，均以 LeRobot 格式存储：
-
-| Hub ID | 内容 | 任务数 |
-|--------|------|-------|
-| `lerobot/libero_spatial_no_noops` | 同一物体，不同空间位置 | 10 |
-| `lerobot/libero_object_no_noops` | 同一位置，不同物体 | 10 |
-| `lerobot/libero_goal_no_noops` | 不同目标状态 | 10 |
-| `lerobot/libero_90_no_noops` | 多样化任务 | 90 |
-
-`no_noops` 版本过滤掉了无动作帧，训练效率更高，推荐使用。
-
-LeRobot 数据集的观测键可以这样查看：
+`PI05Policy._get_default_peft_targets()`（`modeling_pi05.py`）：
 
 ```python
-from lerobot.datasets import LeRobotDataset
-
-ds = LeRobotDataset("lerobot/libero_spatial_no_noops")
-print(ds.features)          # 所有键和形状
-print(ds.meta.robot_type)   # 机器人类型
-print(ds.num_frames)        # 总帧数
+target_modules = r"(.*\.gemma_expert\..*\.self_attn\.(q|v)_proj|model\.(state_proj|action_in_proj|action_out_proj|action_time_mlp_in|action_time_mlp_out))"
 ```
+
+也就是说默认**只在 action expert 的 q/v 投影和动作相关的投影层上加 LoRA**，PaliGemma 主干和视觉编码器保持冻结。想让主干也参与适配，可以用 `--peft.target_modules` 自己写正则。
+
+### 3.4 显存（V100 32GB，fp32）
+
+- 权重约 16.5 GB/卡，这部分是固定开销
+- LoRA 参数和对应的优化器状态都很小
+- 剩下的显存主要用在激活值上：`gradient_checkpointing=true` 能显著降低，`batch_size` 从 4 开始试，OOM 就减半
+- 以上是估算，实际以冒烟测试的 `nvidia-smi` 为准
 
 ---
 
-## 七、快速命令速查
+## 四、数据集：`HuggingFaceVLA/libero`
+
+LeRobot 格式，公开（非 gated），合并了 LIBERO 的 4 个套件：
+
+- 1693 个 episode，273,465 帧，10 fps
+- features：`observation.images.image`（256×256×3）、`observation.images.image2`、`observation.state`（8）、`action`（7）、`task_index` 等
+
+键名和 `pi05_libero_base` 的输入完全一致，所以不需要 rename。
+
+```python
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+ds = LeRobotDataset("HuggingFaceVLA/libero")
+print(ds.meta.features)
+print(ds[0]["task"])
+```
+
+> 注：网上常见的 `lerobot/libero_spatial_no_noops` 等名字在 Hub 上不存在。
+
+---
+
+## 五、环境变量
+
+| 变量 | 用途 |
+|---|---|
+| `HF_HOME` | HF 缓存根目录，模型在 `$HF_HOME/hub`，数据集在 `$HF_HOME/lerobot` 或 hub 下 |
+| `HF_TOKEN` | gated repo（paligemma）需要；只在会话里 export |
+| `HTTPS_PROXY` | 走反向隧道，见 `proxy_and_network.md` |
+| `HF_HUB_OFFLINE=1` | 文件都已缓存后可以设上，禁止联网检查，启动更快 |
+| `CUDA_VISIBLE_DEVICES` | 限定用哪几张卡 |
+
+---
+
+## 六、常用命令
 
 ```bash
-# 验证镜像环境
-python /usr/local/share/v100-image/check_environment.py --require-gpu
-
-# 查看 lerobot_train 所有参数
-python -m lerobot.scripts.lerobot_train --help
-
-# 查看 pi0.5 模型 config
-python -c "
-from lerobot.policies.pi05 import PI05Policy, PI05Config
-cfg = PI05Config()
-print(cfg)
-"
-
-# 查看数据集结构
-python -c "
-from lerobot.datasets import LeRobotDataset
-ds = LeRobotDataset('lerobot/libero_spatial_no_noops')
-print(ds.features)
-"
-
-# 启动训练（单卡，调试用）
-CUDA_VISIBLE_DEVICES=0 python -m lerobot.scripts.lerobot_train \
-  --policy.type=pi05 \
-  --policy.path=lerobot/pi05 \
-  --dataset.repo_id=lerobot/libero_spatial_no_noops \
-  --training.num_steps=200 \
-  --training.batch_size=2 \
-  --training.mixed_precision=no \
-  --peft.method_type=LORA \
-  --peft.r=32 \
-  --peft.lora_alpha=32 \
-  --output_dir=outputs/debug_run
+lerobot-train --help                                   # 所有训练参数
+STEPS=200 NUM_GPUS=1 bash scripts/3_train_lora.sh      # 冒烟测试
+bash scripts/3_train_lora.sh                           # 6 卡正式训练
+LOCAL_CHECKPOINT=outputs/<run>/checkpoints/last/pretrained_model python scripts/2_inference.py
 ```
