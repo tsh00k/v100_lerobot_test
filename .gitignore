@@ -1,0 +1,45 @@
+# ===================================================================
+# .gitignore —— 告诉 git 哪些文件/目录不需要追踪
+# 原则：只提交"代码和配置"，不提交"数据、模型权重、临时产物"
+# ===================================================================
+
+# ----- Python 编译产物 -----
+__pycache__/
+*.py[cod]           # .pyc / .pyo / .pyd
+*.egg-info/
+dist/
+build/
+
+# ----- 虚拟环境（如果不用 conda 而用 venv）-----
+.venv/
+env/
+
+# ----- 敏感信息 -----
+.env                # 存放 HF_TOKEN、WANDB_API_KEY 等，绝不提交
+*.env
+
+# ----- 数据集（体积大，从 HuggingFace Hub 按需下载）-----
+data/
+datasets/
+
+# ----- 模型权重 & 训练输出 -----
+outputs/            # 训练产物：checkpoints、logs
+checkpoints/
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# ----- W&B 本地日志 -----
+wandb/
+
+# ----- LeRobot 源码（通过 install.sh 单独克隆，不纳入本项目）-----
+lerobot/
+
+# ----- Jupyter / 临时文件 -----
+.ipynb_checkpoints/
+*.ipynb
+
+# ----- 系统文件 -----
+.DS_Store           # macOS
+Thumbs.db           # Windows
