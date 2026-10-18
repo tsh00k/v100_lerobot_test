@@ -112,9 +112,8 @@ def main():
     policy = load_policy(MODEL_ID, LOCAL_CKPT, DEVICE, dtype)
 
     print("\n模型期望的输入特征（键名和形状）：")
-    for k, v in policy.config.image_features.items():
-        print(f"  {k}: {v.shape}")
-    print(f"  observation.state: {policy.config.state_feature.shape}")
+    for k, v in policy.config.input_features.items():
+        print(f"  {k}: shape={v.shape}, type={v.type}")
 
     print("\n构造虚拟观测（实际使用时替换为真实环境数据）...")
     obs = make_dummy_libero_observation(DEVICE, dtype)
