@@ -1,108 +1,107 @@
-# pi05_v100 — pi0.5 在 V100 上的推理与 LoRA 微调
+# π0.5 LoRA on LIBERO with 6× V100 (fp32)
 
-## 项目背景
+在 6 张 Tesla V100-32GB 上，以 fp32 精度对 4.1B 参数的 VLA 模型 [π0.5](https://www.physicalintelligence.company/blog/pi05) 做 LoRA 微调。从通用预训练权重 `lerobot/pi05_base` 出发，在 [LIBERO](https://libero-project.github.io/) 仿真基准上评测成功率，并与官方全量微调的结果对比。
 
-### 什么是 pi0.5？
-π0.5 (pi0.5) 是 Physical Intelligence (π) 公司开发的机器人基础模型。
-它是一个**视觉-语言-动作模型 (VLA)**：
-- 输入：摄像头图像 + 机器人本体状态 + 自然语言指令
-- 输出：机器人动作序列（关节角度 / 末端执行器位姿）
+- V100 不支持 bf16，4.1B 模型在 fp32 下做全量微调，单卡放不下一份完整的模型和优化器状态（约 66 GB），所以只训练 LoRA。
+- 框架：[LeRobot](https://github.com/huggingface/lerobot) 0.6.1；数据集：[`HuggingFaceVLA/libero`](https://huggingface.co/datasets/HuggingFaceVLA/libero)（4 个套件，1693 条示教）。
 
-### 什么是 LoRA？
-LoRA（Low-Rank Adaptation）是一种**参数高效微调方法**。
-大模型有数十亿参数，直接全量微调需要巨大的显存和计算资源。
-LoRA 的思路：冻结原始权重，只训练两个小矩阵 A 和 B（它们的乘积是权重更新量）。
-- 训练参数量：原来的 ~0.1%–1%
-- 显存占用：大幅降低
-- 效果：接近全量微调
+<!-- TODO: rollout GIF（每个套件一个） -->
 
-### 什么是 LIBERO？
-LIBERO 是一个**机器人操作基准数据集**，包含多个任务套件：
-- `libero_spatial`：考验空间感知（同一物体，不同位置）
-- `libero_object`：考验物体泛化（同一位置，不同物体）
-- `libero_goal`：考验目标泛化
-- `libero_90`：90 个不同任务
+## 结果
 
----
+LIBERO 成功率（%），每个套件 10 个任务 × 50 个 episode。
 
-## 项目结构
+| 方法 | 起点 | 可训练参数 | Spatial | Object | Goal | Long | 平均 |
+|---|---|---|---|---|---|---|---|
+| openpi 全量微调（官方报告） | pi05_base | 100% | 98.8 | 98.2 | 98.0 | 92.4 | 96.9 |
+| LeRobot 官方 checkpoint（本仓库评测）¹ | — | — | TBD | TBD | TBD | TBD | TBD |
+| **LoRA r=32，default（本仓库）** | pi05_base | TBD | TBD | TBD | TBD | TBD | TBD |
 
-```
-pi05_v100/
-├── .gitignore               # git 忽略规则
-├── README.md                # 本文件
-├── Makefile                 # 快捷入口：make check / infer / smoke / train
-├── install.sh               # 项目初始化（建目录、HF 缓存指向持久化存储、可选 editable lerobot）
-├── docs/
-│   ├── lerobot_pi05_guide.md   # LeRobot 框架与 pi0.5 使用说明
-│   └── proxy_and_network.md    # 反向隧道 / 代理配置
-└── scripts/
-    ├── 1_check_setup.py     # 步骤一：验证环境
-    ├── 2_inference.py       # 步骤二：加载 pi0.5，走 pre/post-processor 跑推理
-    └── 3_train_lora.sh      # 步骤三：多卡 LoRA 微调（超参写在脚本里，环境变量可覆盖）
-```
+¹ `lerobot/pi05_libero_finetuned_v044`。用它来检验本仓库的评测流程，见[评测流程的锚点](#评测流程的锚点)。
 
-运行环境（Python / PyTorch / LeRobot 0.6.1 / peft）由 `v100_mirror` 镜像提供，本仓库不负责装依赖。
+### 消融：LoRA rank
 
-> 参考项目结构来自：
-> - [huggingface/lerobot](https://github.com/huggingface/lerobot)（`src/lerobot/scripts/`、`examples/`）
-> - [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi)（`scripts/`、`examples/libero/`）
+LoRA 位置固定为 `default`。
 
----
+| r | 可训练参数 | 显存 / 卡 | s / step | Spatial | Object | Goal | Long | 平均 |
+|---|---|---|---|---|---|---|---|---|
+| 8 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| 32 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| 64 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
-## 典型深度学习项目架构说明
+### 消融：LoRA 作用位置
 
-| 目录/文件 | 作用 | 类比 |
-|-----------|------|------|
-| `Dockerfile` / `pyproject.toml` | 声明依赖，确保可复现（本项目在镜像里） | 食谱的"原材料清单" |
-| `configs/` 或启动脚本里的参数 | 超参数，与代码分离 | 旋钮面板，不改代码就能调参 |
-| `scripts/` | 对外暴露的入口脚本 | 程序的"操作手册" |
-| `src/` 或主库（LeRobot） | 核心模型、数据、训练逻辑 | 引擎 |
-| `outputs/` | 训练产物（不提交 git） | 实验记录 |
+r = 32。
 
----
+| 位置 | 覆盖的层 | LoRA 层数 | 可训练参数 | 显存 / 卡 | s / step | 平均 |
+|---|---|---|---|---|---|---|
+| `default` | action expert 的 q/v + 动作投影（LeRobot 默认） | 38 | TBD | TBD | TBD | TBD |
+| `expert` | action expert 全部 attn + MLP + 动作/时间投影 | 130 | TBD | TBD | TBD | TBD |
+| `all` | `expert` + PaliGemma 语言主干（视觉编码器冻结） | 256 | TBD | TBD | TBD | TBD |
 
-## 快速开始
+`expert` 和 `all` 只差语言主干，这一对比用来回答"VLM 主干要不要一起适配"。
 
-> 前提：已挂载镜像并 SSH 进入容器。`conda activate lerobot` 已在 `.bashrc` 中自动生效。
-> 镜像已包含 Python 3.12、PyTorch 2.7.1+cu118、lerobot 0.6.1、peft 等全套依赖。
+<!-- TODO: 结论（每张表 2–3 句），wandb 报告链接 -->
 
-### 1. 克隆本项目并初始化
+## 训练设置
+
+| 项 | 值 |
+|---|---|
+| 硬件 | 6 × Tesla V100-SXM2-32GB，DDP |
+| 精度 | fp32（`accelerate --mixed_precision=no`），gradient checkpointing |
+| 起点 | `lerobot/pi05_base` |
+| batch | 4 / 卡 × 6 = 24 |
+| 步数 | TBD |
+| 学习率 | 1e-4，warmup 1000 步，cosine 衰减 |
+| LoRA | `lora_alpha = r` |
+| 归一化 | state / action 用 LIBERO 数据集统计量做 QUANTILES 归一化 |
+| 相机映射 | `image → base_0_rgb`，`image2 → left_wrist_0_rgb`，`right_wrist_0_rgb` 置空并 mask |
+
+### 评测流程的锚点
+
+社区里有好几例报告，说 LeRobot 下的 LIBERO 评测复现不出官方数字（从 0% 到 71% 都有）。所以先评测一个官方 checkpoint，确认本仓库的评测流程是可信的，然后才评测自己训的模型。
+
+## 复现
+
+运行环境（Python 3.12、PyTorch 2.7.1+cu118、LeRobot 0.6.1 + `[libero,peft,pi,training]`）由镜像提供；渲染用 OSMesa，环境问题见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+
 ```bash
-git clone <this-repo> && cd pi05_v100
+export HF_TOKEN=...          # google/paligemma-3b-pt-224 是 gated repo，需先在网页上申请访问
+export WANDB_API_KEY=...
 
-# 基础初始化（建 outputs/ 和 data/ 目录）
-bash install.sh
+make check                   # 检查环境
+make data                    # 下载 LIBERO 数据集（35 GB）
+make eval                    # 评测官方 checkpoint（评测流程锚点）
 
-# 可选：把 HF 模型/数据集缓存指向持久化存储（强烈建议，避免重启后重新下载）
-HF_CACHE_DIR=/persistent/hf_cache bash install.sh
+make train JOB_NAME=r32_default                         # 主实验
+make train JOB_NAME=r8_default  LORA_R=8                # rank 消融
+make train JOB_NAME=r64_default LORA_R=64
+make train JOB_NAME=r32_expert  LORA_TARGETS=expert     # 位置消融
+make train JOB_NAME=r32_all     LORA_TARGETS=all
 
-# 可选：同时切换 lerobot 为 editable 安装（方便阅读和修改 LeRobot 源码）
-HF_CACHE_DIR=/persistent/hf_cache EDITABLE_LEROBOT=1 bash install.sh
+make eval POLICY_PATH=outputs/<run>/checkpoints/last/pretrained_model NAME=<run>
 ```
 
-### 2. 验证环境
-```bash
-python scripts/1_check_setup.py
+快速冒烟测试：`make smoke`（6 卡 20 步，只用 10 条示教）、`make eval SUITES=libero_spatial TASK_IDS=[0] N_EPISODES=2`。全部参数见 `make help`。
+
+## 仓库结构
+
+```
+├── Makefile                  # 入口：check / data / infer / smoke / train / eval
+├── install.sh                # 初始化：建目录、HF 缓存路径、可选 editable lerobot
+├── scripts/
+│   ├── 1_check_setup.py      # 环境检查
+│   ├── 2_inference.py        # 单步推理（pre/post-processor 管线）
+│   ├── 3_train_lora.sh       # LoRA 训练（rank / 作用位置 / 起点可调）
+│   ├── 4_eval_libero.sh      # LIBERO 评测，每个套件占一张卡
+│   └── summarize_eval.py     # 汇总 eval_info.json → markdown 表格
+└── docs/
+    ├── lerobot_pi05_guide.md # LeRobot 与 pi0.5 的使用笔记
+    └── troubleshooting.md    # 安装 / 渲染问题记录
 ```
 
-### 3. 运行推理（验证模型可正常加载）
-```bash
-python scripts/2_inference.py
-```
+## 参考
 
-### 4. 启动 LoRA 微调
-```bash
-# 可选：设置 W&B 密钥（用于训练监控）
-export WANDB_API_KEY=your_key_here
-
-bash scripts/3_train_lora.sh
-```
-
----
-
-## 关于 V100 和 fp32
-
-Tesla V100 **不支持 bfloat16 (bf16)**（Ampere 架构之后才有），只支持 fp32 和 fp16。
-新一代 A100/H100 常用 bf16 进行训练（比 fp32 快、比 fp16 数值更稳定）。
-本项目统一使用 **fp32**，牺牲一定速度换取数值稳定性和 V100 兼容性。
+- Physical Intelligence, *π0.5: a Vision-Language-Action Model with Open-World Generalization*, [arXiv:2504.16054](https://arxiv.org/abs/2504.16054)
+- [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi)，[huggingface/lerobot](https://github.com/huggingface/lerobot)
+- Liu et al., *LIBERO: Benchmarking Knowledge Transfer for Lifelong Robot Learning*, NeurIPS 2023

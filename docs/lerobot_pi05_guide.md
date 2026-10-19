@@ -240,3 +240,23 @@ STEPS=200 NUM_GPUS=1 bash scripts/3_train_lora.sh      # 冒烟测试
 bash scripts/3_train_lora.sh                           # 6 卡正式训练
 LOCAL_CHECKPOINT=outputs/<run>/checkpoints/last/pretrained_model python scripts/2_inference.py
 ```
+
+---
+
+## 附录：背景概念
+
+**LoRA**：冻结原始权重 W，只训练低秩增量 ΔW = BA（A ∈ ℝ^{r×d}，B ∈ ℝ^{d×r}），缩放系数为 `lora_alpha / r`。可训练参数通常只占原模型的约 0.1%–1%，优化器状态也随之大幅减少。
+
+**LIBERO 套件**：`libero_spatial`（物体相同、摆放位置不同）、`libero_object`（摆放相同、物体不同）、`libero_goal`（场景相同、目标不同）、`libero_10`（长时序任务，也叫 Long）。
+
+**V100 与 fp32**：V100（Volta 架构）没有 bf16，只有 fp32 和 fp16；fp16 的数值范围窄，训练容易溢出。本项目统一用 fp32，牺牲速度换取稳定性。
+
+**一般深度学习项目的分层**
+
+| 目录 / 文件 | 作用 |
+|---|---|
+| `Dockerfile` / `pyproject.toml` | 声明依赖，保证可复现（本项目由镜像提供） |
+| `configs/` 或启动脚本里的参数 | 超参数，与代码分离 |
+| `scripts/` | 对外的入口脚本 |
+| `src/` 或主库（这里是 LeRobot） | 模型、数据、训练逻辑 |
+| `outputs/` | 训练产物，不提交 git |
