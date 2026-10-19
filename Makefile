@@ -7,14 +7,17 @@
 #   make smoke NUM_GPUS=1              # 出问题时退回单卡排查
 #   make smoke STEPS=50 JOB_NAME=smoke_bs8 BATCH_SIZE=8
 #   make train NUM_GPUS=6 STEPS=30000 JOB_NAME=lora_r32   # 全量数据
-#   make eval                          # LIBERO 四套件评测，默认官方基线 pi05_libero_finetuned
+#   make eval                          # LIBERO 四套件评测（libero_10 拆两片，共 5 卡），默认官方基线 pi05_libero_finetuned
 #   make eval SUITES=libero_spatial TASK_IDS=[0] N_EPISODES=2 N_ENVS=2   # 测耗时
+#   make eval SUITES="libero_10:0-4 libero_10:5-9" N_EPISODES=10        # 只看最难的 libero_10，快速对比
 #   make eval POLICY_PATH=outputs/<run>/checkpoints/last/pretrained_model NAME=lora_r32
 #
 # 实验序列（训练都从 pi05_base 出发；每次训完用 make eval 评测）：
-#   0. 诊断   make norm-stats CHECK=200                 # 给 pi05_libero_base 补统计量 + 开环检查
-#             make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw
+#   0. 诊断   make norm-stats                           # pi05_libero_base + LIBERO 统计量
+#             make norm-stats OPENPI_PROMPT=1 CHECK=200 # 再改成 openpi 的 prompt 格式 + 三者开环对比
+#             make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw N_EPISODES=10
 #             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
+#             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_prompt
 #   1. 基线   make eval
 #   2. 主实验 make train JOB_NAME=r32_default
 #   3. rank   make train JOB_NAME=r8_default  LORA_R=8
@@ -73,4 +76,5 @@ eval:
 
 # 只构建：几十秒，不占 GPU；CHECK=N 时额外加载模型（1 张卡），在 N 个数据集帧上对比两套 processor
 norm-stats:
-	CUDA_VISIBLE_DEVICES=$(or $(firstword $(GPUS)),0) python scripts/attach_norm_stats.py --check $(or $(CHECK),0)
+	CUDA_VISIBLE_DEVICES=$(or $(firstword $(GPUS)),0) python scripts/attach_norm_stats.py --check $(or $(CHECK),0) \
+	  $(if $(OPENPI_PROMPT),--openpi-prompt)

@@ -72,18 +72,32 @@ r = 32。
 - LeRobot 的 normalizer 遇到没有统计量的键会原样返回。训练时 `lerobot-train` 会用数据集统计量覆盖，`lerobot-eval` 则不会。
 - 结果是两头都错：state 没有归一化就被离散化成 256 档拼进 prompt；LIBERO 的 state 有一维原始值约为 3，超出 [-1, 1]，全部落进最后一档。模型输出的 action 也没有反归一化，直接当成真实动作执行。
 
-**验证**：权重不变，只用 LIBERO 数据集的统计量重建 processor（[`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py)，构建方式与 `lerobot-train` 一致），然后对比：
+**第二个不一致：prompt 格式。** openpi 训练 `pi05_libero` 时设置了 `discrete_state_input=False`（openpi `training/config.py`），所以 prompt 只有任务文本加一个换行，模型从没见过 state。LeRobot 的 pi0.5 processor 则固定拼成 `Task: <task>, State: <8 个数>;\nAction: `。用 openpi 自带的 `paligemma_tokenizer.model` 核对过：
 
-| checkpoint | 开环动作 L1 误差² | Spatial | Object | Goal | Long | 平均 |
-|---|---|---|---|---|---|---|
-| `pi05_libero_base`（原样） | TBD | TBD | TBD | TBD | TBD | TBD |
-| `pi05_libero_base` + LIBERO 统计量 | TBD | TBD | TBD | TBD | TBD | TBD |
+| prompt | 示例任务的 token 数 |
+|---|---|
+| openpi `pi05_libero` | 14 |
+| LeRobot 默认 | 55 |
+| LeRobot 去掉 state 拼接 + 末尾换行 | 14（与 openpi 逐个 token 一致） |
+
+仿真这一侧，LeRobot 和 openpi 是一致的：开局等待 10 步、图像旋转 180°、state 取 eef 位置 + axis-angle + 夹爪。
+
+**验证**：权重不变，只重建 processor（[`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py)，构建方式与 `lerobot-train` 一致），一次只改一个变量：
+
+| checkpoint | 统计量 | prompt | 开环 L1² | Spatial | Object | Goal | Long | 平均 |
+|---|---|---|---|---|---|---|---|---|
+| `pi05_libero_base`（原样） | 无 | LeRobot | TBD | TBD | TBD | TBD | TBD | TBD |
+| + LIBERO 统计量 | ✓ | LeRobot | TBD | 87.6 | 90.6 | 80.6 | 25.2 | 71.0 |
+| + LIBERO 统计量 + openpi prompt | ✓ | openpi | TBD | TBD | TBD | TBD | TBD | TBD |
+| openpi 官方报告 | ✓ | openpi | — | 98.8 | 98.2 | 98.0 | 92.4 | 96.9 |
 
 ² 不跑仿真：在数据集的 200 帧上，比较预测的首步动作与示教动作，取逐维 L1 误差的均值（真实尺度）。
 
-<!-- TODO: 结论。若补统计量后仍明显低于 96.9%，剩余差距可能来自 openpi 原始统计量与 HuggingFaceVLA/libero 统计量不一致 -->
+补上统计量后，平均成功率达到 71.0%，但 Long 只有 25.2%（10 个任务分别为 30 / 22 / 8 / 58 / 10 / 80 / 0 / 12 / 4 / 28）。
 
-这一点对本仓库自己的实验也有影响：从 `pi05_base` 训练时，统计量会写进保存的 checkpoint，所以评测自己训的模型不受这个问题影响。
+<!-- TODO: 结论。其余已知差异：openpi 每 5 步重新规划（这里 n_action_steps=10）；动作统计量来自 physical-intelligence/libero 而非 HuggingFaceVLA/libero；bf16 → fp32 -->
+
+这一点对本仓库自己的实验也有影响：从 `pi05_base` 训练时，统计量会写进保存的 checkpoint，所以评测自己训的模型不受第一个问题影响。prompt 格式则在训练和评测时保持一致，都用 LeRobot 默认格式。
 
 ## 复现
 
@@ -97,9 +111,11 @@ make check                   # 检查环境
 make data                    # 下载 LIBERO 数据集（35 GB）
 make eval                    # 评测官方 checkpoint（评测流程锚点）
 
-make norm-stats CHECK=200    # 诊断：给 pi05_libero_base 补统计量 + 开环检查
+make norm-stats                            # 诊断：pi05_libero_base + LIBERO 统计量
+make norm-stats OPENPI_PROMPT=1 CHECK=200  # 再加 openpi prompt，并做三者开环对比
 make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw
 make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
+make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_prompt
 
 make train JOB_NAME=r32_default                         # 主实验
 make train JOB_NAME=r8_default  LORA_R=8                # rank 消融
