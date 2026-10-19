@@ -14,10 +14,11 @@ LIBERO 成功率（%），每个套件 10 个任务 × 50 个 episode。
 | 方法 | 起点 | 可训练参数 | Spatial | Object | Goal | Long | 平均 |
 |---|---|---|---|---|---|---|---|
 | openpi 全量微调（官方报告） | pi05_base | 100% | 98.8 | 98.2 | 98.0 | 92.4 | 96.9 |
-| LeRobot 官方 checkpoint（本仓库评测）¹ | — | — | TBD | TBD | TBD | TBD | TBD |
+| LeRobot 全量微调（官方报告）¹ | pi05_libero | 100% | 97.0 | 99.0 | 98.0 | 96.0 | 97.5 |
+| LeRobot 全量微调（本仓库评测）¹ | pi05_libero | 100% | TBD | TBD | TBD | TBD | TBD |
 | **LoRA r=32，default（本仓库）** | pi05_base | TBD | TBD | TBD | TBD | TBD | TBD |
 
-¹ `lerobot/pi05_libero_finetuned_v044`。用它来检验本仓库的评测流程，见[评测流程的锚点](#评测流程的锚点)。
+¹ `lerobot/pi05_libero_finetuned`：在 openpi 的 pi05_libero 基础上又全量微调 6k 步（8×H100，bf16）。用本仓库的评测流程评测它，并和官方报告的数字对比，以此检验评测流程本身，见[评测流程的锚点](#评测流程的锚点)。
 
 ### 消融：LoRA rank
 

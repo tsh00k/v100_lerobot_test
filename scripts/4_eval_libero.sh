@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-POLICY_PATH="${POLICY_PATH:-lerobot/pi05_libero_finetuned_v044}"
+POLICY_PATH="${POLICY_PATH:-lerobot/pi05_libero_finetuned}"
 NAME="${NAME:-$(basename "${POLICY_PATH}")}"
 SUITES="${SUITES:-libero_spatial libero_object libero_goal libero_10}"
 N_EPISODES="${N_EPISODES:-50}"          # 每个任务；官方评测为 50
