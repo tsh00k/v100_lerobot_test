@@ -48,12 +48,37 @@ if (( ${#SUITE_ARR[@]} > ${#GPU_ARR[@]} )); then
     echo "❌ 分片数 (${#SUITE_ARR[@]}) 多于 GPU 数 (${#GPU_ARR[@]})"; exit 1
 fi
 
+# 被占用的卡上再加载一份模型（fp32 约 12 GB 起）会 OOM，启动前先拦下
+BUSY=()
+for gpu in "${GPU_ARR[@]:0:${#SUITE_ARR[@]}}"; do
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "${gpu}")
+    (( used > 2000 )) && BUSY+=("GPU ${gpu}: ${used} MiB")
+done
+if (( ${#BUSY[@]} > 0 )); then
+    echo "❌ 以下 GPU 已被占用："; printf '   %s\n' "${BUSY[@]}"
+    echo "   用 nvidia-smi 查看占用进程，或用 GPUS=\"...\" 换卡"; exit 1
+fi
+
+# 评测进程是 & 启动的：kill 本脚本、关闭终端、或整条命令放后台时，它们会变成孤儿继续占卡。
+# 收到 INT/TERM/HUP 时把整棵进程树（含仿真 worker）一起结束。
+kill_tree() {
+    local c
+    for c in $(pgrep -P "$1"); do kill_tree "$c"; done
+    kill -TERM "$1" 2>/dev/null || true
+}
+cleanup() {
+    echo "中断：结束所有评测进程..."
+    for p in "${PIDS[@]}"; do kill_tree "$p"; done
+    exit 130
+}
+PIDS=()
+trap cleanup INT TERM HUP
+
 mkdir -p "${OUT_ROOT}"
 echo "policy=${POLICY_PATH}  suites=${SUITES}  episodes/任务=${N_EPISODES}  n_envs=${N_ENVS}"
 echo "rename：${RENAME_MAP:-无}"
 echo "输出：${OUT_ROOT}"
 
-PIDS=()
 for i in "${!SUITE_ARR[@]}"; do
     spec="${SUITE_ARR[$i]}"; gpu="${GPU_ARR[$i]}"
     suite="${spec%%:*}"; shard="${suite}"
