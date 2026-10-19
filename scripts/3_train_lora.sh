@@ -36,8 +36,22 @@ WANDB="${WANDB:-true}"                 # 需要 WANDB_API_KEY（或 wandb login�
 WANDB_PROJECT="${WANDB_PROJECT:-pi05_v100}"
 EPISODES="${EPISODES:-}"               # 如 "[0,1,2]"；只下载/使用这些 episode。留空 = 全量（35 GB）
 
+# pi05_base：通用预训练，未见过 LIBERO（实验的起点）
+# pi05_libero_base：openpi 官方已在 LIBERO 上全量微调过的 pi05_libero（只适合做对照）
+POLICY_PATH="${POLICY_PATH:-lerobot/pi05_base}"
+
 EPISODES_ARG=()
 [[ -n "${EPISODES}" ]] && EPISODES_ARG=(--dataset.episodes="${EPISODES}")
+
+# pi05_base 的相机键名是 base_0_rgb / left_wrist_0_rgb / right_wrist_0_rgb，数据集是 image / image2。
+# 与 openpi 的 LIBERO 映射一致：主相机→base，腕部→left_wrist，right_wrist 缺失时模型自动填空图并 mask。
+DEFAULT_RENAME='{"observation.images.image": "observation.images.base_0_rgb", "observation.images.image2": "observation.images.left_wrist_0_rgb"}'
+RENAME_ARG=()
+if [[ -n "${RENAME_MAP:-}" ]]; then
+    RENAME_ARG=(--rename_map="${RENAME_MAP}")
+elif [[ "${POLICY_PATH}" == "lerobot/pi05_base" ]]; then
+    RENAME_ARG=(--rename_map="${DEFAULT_RENAME}")
+fi
 
 # 单卡不加 --multi_gpu
 MULTI_GPU_FLAG=""
@@ -49,6 +63,7 @@ if [[ "${WANDB}" == "true" && -z "${WANDB_API_KEY:-}" && ! -f ~/.netrc ]]; then
 fi
 
 echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} wandb=${WANDB}(${WANDB_PROJECT})"
+echo "base：${POLICY_PATH}  rename：${RENAME_ARG[*]:-无}"
 echo "episodes：${EPISODES:-全部}"
 echo "输出目录：${OUTPUT_DIR}"
 
@@ -62,8 +77,9 @@ accelerate launch \
     \
     --dataset.repo_id=HuggingFaceVLA/libero \
     "${EPISODES_ARG[@]}" \
+    "${RENAME_ARG[@]}" \
     \
-    --policy.path=lerobot/pi05_libero_base \
+    --policy.path="${POLICY_PATH}" \
     --policy.dtype=float32 \
     --policy.gradient_checkpointing=true \
     --policy.optimizer_lr="${LR}" \
