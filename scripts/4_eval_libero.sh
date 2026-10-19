@@ -90,6 +90,8 @@ for i in "${!SUITE_ARR[@]}"; do
     fi
     TASK_IDS_ARG=()
     [[ -n "${task_ids}" ]] && TASK_IDS_ARG=(--env.task_ids="${task_ids}")
+    # compile_model=false：pi05_libero_finetuned 自带 compile_model=true，torch.compile 需要 gcc 链接
+    # 不带版本号的 libcuda.so，容器里只有驱动注入的 libcuda.so.1，会编译失败；也让所有版本条件一致。
     # lerobot-eval 要求 output_dir 不存在，所以只建日志、不建分片目录
     log="${OUT_ROOT}/${shard}.log"
     echo "  ${shard} (tasks ${task_ids:-all}) → GPU ${gpu}  (日志 ${log})"
@@ -97,6 +99,7 @@ for i in "${!SUITE_ARR[@]}"; do
         --policy.path="${POLICY_PATH}" \
         --policy.dtype=float32 \
         --policy.device=cuda \
+        --policy.compile_model=false \
         --env.type=libero \
         --env.task="${suite}" \
         "${TASK_IDS_ARG[@]}" \
