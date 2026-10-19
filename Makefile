@@ -12,6 +12,9 @@
 #   make eval POLICY_PATH=outputs/<run>/checkpoints/last/pretrained_model NAME=lora_r32
 #
 # 实验序列（训练都从 pi05_base 出发；每次训完用 make eval 评测）：
+#   0. 诊断   make norm-stats CHECK=200                 # 给 pi05_libero_base 补统计量 + 开环检查
+#             make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw
+#             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
 #   1. 基线   make eval
 #   2. 主实验 make train JOB_NAME=r32_default
 #   3. rank   make train JOB_NAME=r8_default  LORA_R=8
@@ -32,7 +35,7 @@ export NAME SUITES N_EPISODES N_ENVS TASK_IDS GPUS SEED OUT_ROOT
 SMOKE_STEPS    := $(or $(STEPS),20)
 SMOKE_EPISODES := [0,1,2,3,4,5,6,7,8,9]
 
-.PHONY: help check data infer smoke train eval
+.PHONY: help check data infer smoke train eval norm-stats
 
 help:
 	@grep -E '^#' Makefile | sed 's/^# \{0,1\}//'
@@ -67,3 +70,7 @@ train:
 
 eval:
 	bash scripts/4_eval_libero.sh
+
+# 只构建：几十秒，不占 GPU；CHECK=N 时额外加载模型（1 张卡），在 N 个数据集帧上对比两套 processor
+norm-stats:
+	CUDA_VISIBLE_DEVICES=$(or $(firstword $(GPUS)),0) python scripts/attach_norm_stats.py --check $(or $(CHECK),0)

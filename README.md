@@ -62,6 +62,29 @@ r = 32。
 
 社区里有好几例报告，说 LeRobot 下的 LIBERO 评测复现不出官方数字（从 0% 到 71% 都有）。所以先评测一个官方 checkpoint，确认本仓库的评测流程是可信的，然后才评测自己训的模型。
 
+### 诊断：`pi05_libero_base` 为什么在 LeRobot 里评测出 0%
+
+`lerobot/pi05_libero_base` 是 openpi 官方 `pi05_libero` 的 PyTorch 转换版，官方报告的平均成功率是 96.9%，但社区在 LeRobot 下评测只得到约 0%（[lerobot#2533](https://github.com/huggingface/lerobot/issues/2533)）。
+
+**假设**：这个 checkpoint 的 processor 没有携带归一化统计量。
+
+- `policy_preprocessor.json` / `policy_postprocessor.json` 里 normalizer 的 `features` 为空，也没有 stats 文件，`norm_map` 写的还是 `MEAN_STD`（pi0.5 用的是 `QUANTILES`）。
+- LeRobot 的 normalizer 遇到没有统计量的键会原样返回。训练时 `lerobot-train` 会用数据集统计量覆盖，`lerobot-eval` 则不会。
+- 结果是两头都错：state 没有归一化就被离散化成 256 档拼进 prompt；LIBERO 的 state 有一维原始值约为 3，超出 [-1, 1]，全部落进最后一档。模型输出的 action 也没有反归一化，直接当成真实动作执行。
+
+**验证**：权重不变，只用 LIBERO 数据集的统计量重建 processor（[`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py)，构建方式与 `lerobot-train` 一致），然后对比：
+
+| checkpoint | 开环动作 L1 误差² | Spatial | Object | Goal | Long | 平均 |
+|---|---|---|---|---|---|---|
+| `pi05_libero_base`（原样） | TBD | TBD | TBD | TBD | TBD | TBD |
+| `pi05_libero_base` + LIBERO 统计量 | TBD | TBD | TBD | TBD | TBD | TBD |
+
+² 不跑仿真：在数据集的 200 帧上，比较预测的首步动作与示教动作，取逐维 L1 误差的均值（真实尺度）。
+
+<!-- TODO: 结论。若补统计量后仍明显低于 96.9%，剩余差距可能来自 openpi 原始统计量与 HuggingFaceVLA/libero 统计量不一致 -->
+
+这一点对本仓库自己的实验也有影响：从 `pi05_base` 训练时，统计量会写进保存的 checkpoint，所以评测自己训的模型不受这个问题影响。
+
 ## 复现
 
 运行环境（Python 3.12、PyTorch 2.7.1+cu118、LeRobot 0.6.1 + `[libero,peft,pi,training]`）由镜像提供；渲染用 OSMesa，环境问题见 [docs/troubleshooting.md](docs/troubleshooting.md)。
@@ -73,6 +96,10 @@ export WANDB_API_KEY=...
 make check                   # 检查环境
 make data                    # 下载 LIBERO 数据集（35 GB）
 make eval                    # 评测官方 checkpoint（评测流程锚点）
+
+make norm-stats CHECK=200    # 诊断：给 pi05_libero_base 补统计量 + 开环检查
+make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw
+make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
 
 make train JOB_NAME=r32_default                         # 主实验
 make train JOB_NAME=r8_default  LORA_R=8                # rank 消融
@@ -95,7 +122,8 @@ make eval POLICY_PATH=outputs/<run>/checkpoints/last/pretrained_model NAME=<run>
 │   ├── 2_inference.py        # 单步推理（pre/post-processor 管线）
 │   ├── 3_train_lora.sh       # LoRA 训练（rank / 作用位置 / 起点可调）
 │   ├── 4_eval_libero.sh      # LIBERO 评测，每个套件占一张卡
-│   └── summarize_eval.py     # 汇总 eval_info.json → markdown 表格
+│   ├── summarize_eval.py     # 汇总 eval_info.json → markdown 表格
+│   └── attach_norm_stats.py  # 给缺统计量的 checkpoint 补上数据集统计量 + 开环检查
 └── docs/
     ├── lerobot_pi05_guide.md # LeRobot 与 pi0.5 的使用笔记
     └── troubleshooting.md    # 安装 / 渲染问题记录
