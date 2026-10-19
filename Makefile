@@ -7,6 +7,9 @@
 #   make smoke NUM_GPUS=1              # 出问题时退回单卡排查
 #   make smoke STEPS=50 JOB_NAME=smoke_bs8 BATCH_SIZE=8
 #   make train NUM_GPUS=6 STEPS=30000 JOB_NAME=lora_r32   # 全量数据
+#   make eval                          # LIBERO 四套件评测，默认官方基线 pi05_libero_finetuned_v044
+#   make eval SUITES=libero_spatial TASK_IDS=[0] N_EPISODES=2 N_ENVS=2   # 测耗时
+#   make eval POLICY_PATH=outputs/<run>/checkpoints/last/pretrained_model NAME=lora_r32
 #
 # 命令行传入的变量通过 export 传给脚本；没传的保持为空，由脚本里的默认值兜底。
 
@@ -16,11 +19,12 @@ export STEPS JOB_NAME NUM_GPUS BATCH_SIZE LR LORA_R SAVE_FREQ LOG_FREQ OUTPUT_DI
 export POLICY_PATH RENAME_MAP
 export WANDB WANDB_PROJECT
 export HF_MODEL_ID LOCAL_CHECKPOINT DEVICE TASK
+export NAME SUITES N_EPISODES N_ENVS TASK_IDS GPUS SEED OUT_ROOT
 
 SMOKE_STEPS    := $(or $(STEPS),20)
 SMOKE_EPISODES := [0,1,2,3,4,5,6,7,8,9]
 
-.PHONY: help check data infer smoke train
+.PHONY: help check data infer smoke train eval
 
 help:
 	@grep -E '^#' Makefile | sed 's/^# \{0,1\}//'
@@ -52,3 +56,6 @@ smoke:
 
 train:
 	bash scripts/3_train_lora.sh
+
+eval:
+	bash scripts/4_eval_libero.sh
