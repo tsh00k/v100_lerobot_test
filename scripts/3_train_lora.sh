@@ -10,7 +10,7 @@
 #
 # 前置：
 #   export HF_TOKEN=hf_xxx                              # paligemma tokenizer 是 gated
-#   export HTTPS_PROXY=socks5h://127.0.0.1:17897        # 首次下载数据集需要
+#   export HTTPS_PROXY=socks5h://127.0.0.1:<端口>       # 首次下载需要；端口以服务器上 ss -tlnp | grep sshd 为准
 #   在 tmux 里运行！
 #
 # 用法（推荐通过 Makefile）：

@@ -19,7 +19,8 @@ postprocessor 把模型输出反归一化回真实动作尺度，并搬回 CPU�
 
 前置条件：
     - google/paligemma-3b-pt-224 是 gated repo，需在 HF 网页申请访问并 export HF_TOKEN
-    - 首次运行需要联网（走隧道）：export HTTPS_PROXY=socks5h://127.0.0.1:17897
+    - 首次运行需要联网（走隧道）：export HTTPS_PROXY=socks5h://127.0.0.1:<端口>
+      端口以服务器上 `ss -tlnp | grep sshd` 看到的 127.0.0.1:xxxxx 为准
 
 运行：
     python scripts/2_inference.py
