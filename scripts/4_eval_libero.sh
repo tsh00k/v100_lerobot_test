@@ -8,6 +8,7 @@
 # 前置：
 #   - 无头渲染用 OSMesa（见 docs/troubleshooting.md）
 #   - 首次运行需联网：export HTTPS_PROXY=socks5h://127.0.0.1:<端口>
+#   - 需要 HF_TOKEN（paligemma tokenizer 是 gated）；或者所有文件都缓存好后 export HF_HUB_OFFLINE=1
 #
 # 用法（推荐通过 Makefile）：
 #   make eval                                        # 官方基线，四个套件，每任务 50 episode
@@ -31,6 +32,12 @@ export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 
 TASK_IDS_ARG=()
 [[ -n "${TASK_IDS}" ]] && TASK_IDS_ARG=(--env.task_ids="${TASK_IDS}")
+# lerobot-eval 会用 --rename_map 覆盖 checkpoint 里保存的映射（不传 = 覆盖成空），
+# 所以从 pi05_base 训出来的 checkpoint（相机键是 base_0_rgb 等）评测时必须再传一次。
+DEFAULT_RENAME='{"observation.images.image": "observation.images.base_0_rgb", "observation.images.image2": "observation.images.left_wrist_0_rgb"}'
+if [[ -z "${RENAME_MAP:-}" && -f "${POLICY_PATH}/config.json" ]] && grep -q base_0_rgb "${POLICY_PATH}/config.json"; then
+    RENAME_MAP="${DEFAULT_RENAME}"
+fi
 RENAME_ARG=()
 [[ -n "${RENAME_MAP:-}" ]] && RENAME_ARG=(--rename_map="${RENAME_MAP}")
 
@@ -42,6 +49,7 @@ fi
 
 mkdir -p "${OUT_ROOT}"
 echo "policy=${POLICY_PATH}  suites=${SUITES}  episodes/任务=${N_EPISODES}  n_envs=${N_ENVS}"
+echo "rename：${RENAME_MAP:-无}"
 echo "输出：${OUT_ROOT}"
 
 PIDS=()

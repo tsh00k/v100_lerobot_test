@@ -11,12 +11,20 @@
 #   make eval SUITES=libero_spatial TASK_IDS=[0] N_EPISODES=2 N_ENVS=2   # 测耗时
 #   make eval POLICY_PATH=outputs/<run>/checkpoints/last/pretrained_model NAME=lora_r32
 #
+# 实验序列（训练都从 pi05_base 出发；每次训完用 make eval 评测）：
+#   1. 基线   make eval
+#   2. 主实验 make train JOB_NAME=r32_default
+#   3. rank   make train JOB_NAME=r8_default  LORA_R=8
+#             make train JOB_NAME=r64_default LORA_R=64
+#   4. 位置   make train JOB_NAME=r32_expert  LORA_TARGETS=expert
+#             make train JOB_NAME=r32_all     LORA_TARGETS=all
+#
 # 命令行传入的变量通过 export 传给脚本；没传的保持为空，由脚本里的默认值兜底。
 
 SHELL := /bin/bash
 
 export STEPS JOB_NAME NUM_GPUS BATCH_SIZE LR LORA_R SAVE_FREQ LOG_FREQ OUTPUT_DIR EPISODES
-export POLICY_PATH RENAME_MAP
+export POLICY_PATH RENAME_MAP LORA_TARGETS
 export WANDB WANDB_PROJECT
 export HF_MODEL_ID LOCAL_CHECKPOINT DEVICE TASK
 export NAME SUITES N_EPISODES N_ENVS TASK_IDS GPUS SEED OUT_ROOT

@@ -53,6 +53,21 @@ elif [[ "${POLICY_PATH}" == "lerobot/pi05_base" ]]; then
     RENAME_ARG=(--rename_map="${DEFAULT_RENAME}")
 fi
 
+# LoRA 作用位置（peft 对字符串做 re.fullmatch；命中数已对照 pi05 模块名核实）
+#   default：LeRobot 默认，action expert 的 q/v + action_in/out_proj            （38 层）
+#   expert ：action expert 全部 attn+mlp + 4 个动作/时间投影                     （130 层）
+#   all    ：expert + PaliGemma 语言主干全部 attn+mlp；视觉编码器仍冻结          （256 层）
+# expert 与 all 只差语言主干，用来做"要不要适配 VLM"的消融。
+LORA_TARGETS="${LORA_TARGETS:-default}"
+_PROJ="action_in_proj|action_out_proj|time_mlp_in|time_mlp_out"
+_BLOCK='(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)'
+case "${LORA_TARGETS}" in
+    default) TARGETS_ARG=() ;;
+    expert)  TARGETS_ARG=(--peft.target_modules="(.*\.gemma_expert\..*\.${_BLOCK}|model\.(${_PROJ}))") ;;
+    all)     TARGETS_ARG=(--peft.target_modules="(.*\.(gemma_expert|language_model)\..*\.${_BLOCK}|model\.(${_PROJ}))") ;;
+    *) echo "❌ LORA_TARGETS 只能是 default / expert / all"; exit 1 ;;
+esac
+
 # 单卡不加 --multi_gpu
 MULTI_GPU_FLAG=""
 [[ "${NUM_GPUS}" -gt 1 ]] && MULTI_GPU_FLAG="--multi_gpu"
@@ -62,7 +77,7 @@ if [[ "${WANDB}" == "true" && -z "${WANDB_API_KEY:-}" && ! -f ~/.netrc ]]; then
     exit 1
 fi
 
-echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} wandb=${WANDB}(${WANDB_PROJECT})"
+echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} targets=${LORA_TARGETS} wandb=${WANDB}(${WANDB_PROJECT})"
 echo "base：${POLICY_PATH}  rename：${RENAME_ARG[*]:-无}"
 echo "episodes：${EPISODES:-全部}"
 echo "输出目录：${OUTPUT_DIR}"
@@ -89,6 +104,7 @@ accelerate launch \
     --peft.method_type=LORA \
     --peft.r="${LORA_R}" \
     --peft.lora_alpha="${LORA_R}" \
+    "${TARGETS_ARG[@]}" \
     \
     --batch_size="${BATCH_SIZE}" \
     --steps="${STEPS}" \
