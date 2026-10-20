@@ -1,11 +1,13 @@
 # ===================================================================
 # .gitignore —— 告诉 git 哪些文件/目录不需要追踪
 # 原则：只提交"代码和配置"，不提交"数据、模型权重、临时产物"
+# 注意：gitignore 不支持行尾注释，注释必须单独占一行
 # ===================================================================
 
 # ----- Python 编译产物 -----
 __pycache__/
-*.py[cod]           # .pyc / .pyo / .pyd
+# .pyc / .pyo / .pyd
+*.py[cod]
 *.egg-info/
 dist/
 build/
@@ -15,7 +17,8 @@ build/
 env/
 
 # ----- 敏感信息 -----
-.env                # 存放 HF_TOKEN、WANDB_API_KEY 等，绝不提交
+# 存放 HF_TOKEN、WANDB_API_KEY 等，绝不提交
+.env
 *.env
 
 # ----- 数据集（体积大，从 HuggingFace Hub 按需下载）-----
@@ -23,7 +26,8 @@ data/
 datasets/
 
 # ----- 模型权重 & 训练输出 -----
-outputs/            # 训练产物：checkpoints、logs
+# 训练 / 评测产物：checkpoints、logs、视频
+outputs/
 checkpoints/
 *.pt
 *.pth
@@ -41,5 +45,6 @@ lerobot/
 *.ipynb
 
 # ----- 系统文件 -----
-.DS_Store           # macOS
-Thumbs.db           # Windows
+# macOS / Windows
+.DS_Store
+Thumbs.db
