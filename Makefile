@@ -71,6 +71,7 @@ smoke:
 	NUM_GPUS=$(or $(NUM_GPUS),6) \
 	LOG_FREQ=$(or $(LOG_FREQ),2) \
 	SAVE_FREQ=$(or $(SAVE_FREQ),$(SMOKE_STEPS)) \
+	MONITOR=$(or $(MONITOR),full) \
 	bash scripts/3_train_lora.sh
 
 train:
