@@ -20,6 +20,9 @@
 #             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_prompt
 #             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_all \
 #                  EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"   # 再对齐 openpi 的 horizon/replan
+#             make norm-stats OPENPI_PROMPT=1 OPENPI_STATS=1                       # 再换成 openpi 的统计量（需联网一次）
+#             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_full NAME=libero_base_openpi_full \
+#                  EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"
 #   1. 基线   make eval
 #   2. 主实验 make train JOB_NAME=r32_default
 #   3. rank   make train JOB_NAME=r8_default  LORA_R=8
@@ -79,4 +82,4 @@ eval:
 # 只构建：几十秒，不占 GPU；CHECK=N 时额外加载模型（1 张卡），在 N 个数据集帧上对比两套 processor
 norm-stats:
 	CUDA_VISIBLE_DEVICES=$(or $(firstword $(GPUS)),0) python scripts/attach_norm_stats.py --check $(or $(CHECK),0) \
-	  $(if $(OPENPI_PROMPT),--openpi-prompt)
+	  $(if $(OPENPI_PROMPT),--openpi-prompt) $(if $(OPENPI_STATS),--openpi-stats)

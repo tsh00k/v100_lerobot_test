@@ -13,9 +13,16 @@
 LeRobot 的 pi05 processor 固定拼成 "Task: <task>, State: <8 个数>;\nAction: "。该选项去掉 state 拼接步骤、
 在 task 末尾补换行，token 序列与 openpi 逐个一致（已用 openpi 的 paligemma_tokenizer.model 核对）。
 
+--openpi-stats：统计量换成 openpi 训练 pi05_libero 时实际用的那份（从 physical-intelligence/libero 计算，
+随 checkpoint 发布在 gs://openpi-assets/checkpoints/pi05_libero/assets/physical-intelligence/libero/norm_stats.json）。
+它和 HuggingFaceVLA/libero 的统计量差别很大（action 的 q01–q99 区间，HF 只有 openpi 的 46%–96%），
+而 LeRobot 与 openpi 的 QUANTILES 公式一致（2·(x−q01)/(q99−q01) − 1），所以可以直接替换 q01/q99。
+openpi 文件里没有 min/max，LeRobot 的 QUANTILES 模式也不用。
+
 用法：
   python scripts/attach_norm_stats.py                       # 生成 outputs/ckpt/pi05_libero_base_with_stats
   python scripts/attach_norm_stats.py --openpi-prompt       # 生成 outputs/ckpt/pi05_libero_base_openpi_prompt
+  python scripts/attach_norm_stats.py --openpi-prompt --openpi-stats   # 生成 outputs/ckpt/pi05_libero_base_openpi_full
   python scripts/attach_norm_stats.py --check 200           # 另外做一次开环检查（不跑仿真）
   python scripts/attach_norm_stats.py --check 200 --no-build
 """
@@ -28,6 +35,28 @@ from pathlib import Path
 import torch
 
 DATASET = "HuggingFaceVLA/libero"
+OPENPI_STATS_URL = (
+    "https://storage.googleapis.com/openpi-assets/checkpoints/pi05_libero/assets/physical-intelligence/libero/norm_stats.json"
+)
+
+
+def load_openpi_stats(cache: Path) -> dict:
+    """下载 openpi 的 norm_stats.json，转成 LeRobot 的 stats 键名。下载走 HTTPS_PROXY。"""
+    import json
+
+    import numpy as np
+    import requests
+
+    if not cache.exists():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        r = requests.get(OPENPI_STATS_URL, timeout=60)
+        r.raise_for_status()
+        cache.write_bytes(r.content)
+    raw = json.loads(cache.read_text())["norm_stats"]
+    return {
+        lerobot_key: {k: np.asarray(v, dtype=np.float32) for k, v in raw[openpi_key].items()}
+        for lerobot_key, openpi_key in [("observation.state", "state"), ("action", "actions")]
+    }
 
 
 def use_openpi_prompt(pre) -> None:
@@ -115,6 +144,7 @@ def main() -> None:
     ap.add_argument("--src", default="lerobot/pi05_libero_base")
     ap.add_argument("--out", default=None)
     ap.add_argument("--openpi-prompt", action="store_true", help="prompt 改成 openpi pi05_libero 的格式（不含 state）")
+    ap.add_argument("--openpi-stats", action="store_true", help="统计量用 openpi 发布的 norm_stats.json")
     ap.add_argument("--check", type=int, default=0, help="开环检查的帧数，0 = 不做")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -122,6 +152,7 @@ def main() -> None:
     default_outs = {
         "补统计量": Path("outputs/ckpt/pi05_libero_base_with_stats"),
         "补统计量+openpi prompt": Path("outputs/ckpt/pi05_libero_base_openpi_prompt"),
+        "openpi 统计量+prompt": Path("outputs/ckpt/pi05_libero_base_openpi_full"),
     }
 
     import lerobot.policies.pi05  # noqa: F401  注册 pi05 配置类
@@ -130,13 +161,20 @@ def main() -> None:
     from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
     src_dir = Path(args.src) if Path(args.src).is_dir() else Path(snapshot_download(args.src))
-    key = "补统计量+openpi prompt" if args.openpi_prompt else "补统计量"
+    if args.openpi_stats and not args.openpi_prompt:
+        ap.error("--openpi-stats 需要和 --openpi-prompt 一起用（只对 openpi 的完整设置做对照）")
+    key = ("openpi 统计量+prompt" if args.openpi_stats
+           else "补统计量+openpi prompt" if args.openpi_prompt else "补统计量")
     out_dir = Path(args.out) if args.out else default_outs[key]
 
     if not args.no_build:
         cfg = PreTrainedConfig.from_pretrained(str(src_dir))
-        stats = LeRobotDatasetMetadata(DATASET).stats
+        if args.openpi_stats:
+            stats = load_openpi_stats(Path("outputs/ckpt/openpi_pi05_libero_norm_stats.json"))
+        else:
+            stats = LeRobotDatasetMetadata(DATASET).stats
         print("norm_map:", cfg.normalization_mapping)
+        print("action q01/q99:", stats["action"]["q01"], stats["action"]["q99"])
         print("state q01/q99:", stats["observation.state"]["q01"], stats["observation.state"]["q99"])
         build(src_dir, out_dir, cfg, stats, openpi_prompt=args.openpi_prompt)
 

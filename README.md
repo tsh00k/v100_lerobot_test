@@ -84,6 +84,14 @@ r = 32。
 
 **第三个不一致：动作 chunk 长度。** openpi 训练 `pi05_libero` 用的是 `action_horizon=10`，评测时每 5 步重新规划一次（`examples/libero/main.py` 中 `replan_steps=5`）。LeRobot 给这个 checkpoint 配的却是 `chunk_size=50`、`n_action_steps=10`。pi0.5 的所有动作 token 在同一次去噪里生成，彼此之间做双向注意力（LeRobot `modeling_pi05.py` 中 `att_masks = [1] + [0] * (chunk_size - 1)`）。所以多出来的 40 个位置不只是没用，它们训练时从没出现过，还会通过注意力干扰前 10 步。这两项在评测时都能通过 `--policy.chunk_size` / `--policy.n_action_steps` 覆盖，不用重新训练。
 
+**第四个不一致：统计量的来源。** 前面"补统计量"用的是 `HuggingFaceVLA/libero` 算出来的统计量，而 openpi 训练 `pi05_libero` 时，用的是从 `physical-intelligence/libero` 算出、随 checkpoint 一起发布的 `norm_stats.json`。两份差别很大，HF 那份 action 的 q01–q99 区间只有 openpi 的 46%–96%：
+
+| action 维度 | x | y | z | rx | ry | rz | gripper |
+|---|---|---|---|---|---|---|---|
+| 区间比 HF / openpi | 0.74 | 0.81 | 0.84 | 0.62 | 0.73 | **0.46** | 0.96 |
+
+模型输出的是归一化后的动作，反归一化时区间偏小，执行的动作就会被系统性地缩小，最多缩到原来的一半左右。两边 QUANTILES 的公式相同（`2·(x−q01)/(q99−q01) − 1`），所以直接替换 q01/q99 即可。
+
 **验证**：权重不变，只重建 processor（[`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py)，构建方式与 `lerobot-train` 一致），或者覆盖评测参数，一次只改一个变量。先用最难的 Long 套件快速筛选（每个任务 10 个 episode）：
 
 | checkpoint | 统计量 | prompt | chunk / 执行 | Long（快速³） |
@@ -91,7 +99,8 @@ r = 32。
 | `pi05_libero_base`（原样） | 无 | LeRobot | 50 / 10 | 0.0 |
 | + LIBERO 统计量 | ✓ | LeRobot | 50 / 10 | 25.2⁴ |
 | + LIBERO 统计量 + openpi prompt | ✓ | openpi | 50 / 10 | 32.0 |
-| + LIBERO 统计量 + openpi prompt + openpi horizon | ✓ | openpi | 10 / 5 | TBD |
+| + LIBERO 统计量 + openpi prompt + openpi horizon | ✓ | openpi | 10 / 5 | 45.0 |
+| + **openpi 统计量** + openpi prompt + openpi horizon | openpi 的 | openpi | 10 / 5 | TBD |
 | `pi05_libero_finetuned`（锚点，在 LeRobot 里训练） | ✓ | LeRobot | 50 / 50 | 85.0 |
 | openpi 官方报告 | ✓ | openpi | 10 / 5 | 92.4 |
 
@@ -111,12 +120,13 @@ r = 32。
 目前的结论：
 - **统计量是必要条件**。没有统计量时，Long 是 0%；补上之后，四个套件平均 71.0%，但 Long 只有 25.2%（10 个任务分别为 30 / 22 / 8 / 58 / 10 / 80 / 0 / 12 / 4 / 28）。
 - **prompt 格式有帮助，但不是主要原因**：Long 从 25.2 提到 32.0。不过 32.0 是快速评测的结果，误差范围内的提升还不能下定论。
+- **chunk 长度的影响比 prompt 大**：对齐到 openpi 的 10 / 5 后，从 32.0 提到 45.0。
 - **差距的根源是训练和评测不一致，不是"全量微调 vs 其他"**。`pi05_libero_base` 和锚点都是全量微调得到的，锚点在 LeRobot 里训练、在 LeRobot 里评测，没有不一致，Long 达到 85.0。
 - 锚点的快速评测比官方报告（96.0）低约 11 个百分点，超出了统计误差。可能是本仓库的评测条件造成的（fp32 推理、OSMesa 渲染、关闭 torch.compile），需要完整评测确认。
 
-<!-- TODO: horizon 对齐后的结果与最终结论；剩余已知差异：动作统计量来自 physical-intelligence/libero 而非 HuggingFaceVLA/libero；bf16 → fp32 -->
+<!-- TODO: openpi 统计量的结果与最终结论；剩余已知差异：图像 resize 顺序（openpi 先 resize_with_pad 到 224 再转 uint8）；bf16 → fp32 -->
 
-对本仓库自己的实验，这三个问题都不存在：从 `pi05_base` 开始训练时，统计量、prompt 格式和 `chunk_size` 都写进保存的 checkpoint，训练和评测用的是同一套设置。`n_action_steps` 只在评测时起作用，训练完后可以单独扫描。
+对本仓库自己的实验，这几个问题都不存在：从 `pi05_base` 开始训练时，统计量（来自训练用的同一个数据集）、prompt 格式和 `chunk_size` 都写进保存的 checkpoint，训练和评测用的是同一套设置。`n_action_steps` 只在评测时起作用，训练完后可以单独扫描。
 
 ## 复现
 
@@ -135,6 +145,9 @@ make norm-stats OPENPI_PROMPT=1 CHECK=200  # 再加 openpi prompt，并做三者
 make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw
 make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
 make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_all \
+     EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"
+make norm-stats OPENPI_PROMPT=1 OPENPI_STATS=1   # 换成 openpi 发布的统计量
+make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_full NAME=libero_base_openpi_full \
      EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"
 
 make train JOB_NAME=r32_default                         # 主实验
