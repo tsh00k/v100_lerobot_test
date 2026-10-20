@@ -96,6 +96,7 @@ LIBERO 成功率（%），每个套件 10 个任务 × 50 个 episode：
 | 方法 | 起点 | 可训练参数 | Spatial | Object | Goal | Long | 平均 |
 |---|---|---|---|---|---|---|---|
 | openpi 全量微调（官方报告） | pi05_base | 100% | 98.8 | 98.2 | 98.0 | 92.4 | 96.9 |
+| openpi 全量微调（本仓库评测，#1–#4 修复） | pi05_base | 100% | TBD | TBD | TBD | TBD | TBD |
 | LeRobot 全量微调（官方报告） | pi05_libero | 100% | 97.0 | 99.0 | 98.0 | 96.0 | 97.5 |
 | LeRobot 全量微调（本仓库评测） | pi05_libero | 100% | TBD | TBD | TBD | TBD | TBD |
 | **LoRA r=32，default（本仓库）** | pi05_base | TBD | TBD | TBD | TBD | TBD | TBD |
@@ -135,6 +136,7 @@ r = 32。
 | 步数 | TBD |
 | 学习率 | 1e-4，warmup 1000 步，cosine 衰减 |
 | LoRA | `lora_alpha = r` |
+| 动作 chunk | `chunk_size=10`，每 5 步重新规划（同 openpi 的 LIBERO 配方；`pi05_base` 默认为 50） |
 | 归一化 | state / action 用 LIBERO 数据集统计量做 QUANTILES 归一化 |
 | 相机映射 | `image → base_0_rgb`，`image2 → left_wrist_0_rgb`，`right_wrist_0_rgb` 置空并 mask |
 
