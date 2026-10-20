@@ -30,6 +30,9 @@ TASK_IDS="${TASK_IDS:-}"                # 如 "[0]"；作用于没有写分片�
 GPUS="${GPUS:-0 1 2 3 4 5}"
 SEED="${SEED:-1000}"
 OUT_ROOT="${OUT_ROOT:-outputs/eval/${NAME}_$(date +%Y%m%d_%H%M%S)}"
+# 透传给 lerobot-eval 的额外参数（空格分隔，放在最后、可覆盖前面的同名参数），
+# 如 EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"
+read -r -a EXTRA_ARR <<< "${EXTRA_ARGS:-}"
 
 export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 
@@ -77,6 +80,7 @@ trap cleanup INT TERM HUP
 mkdir -p "${OUT_ROOT}"
 echo "policy=${POLICY_PATH}  suites=${SUITES}  episodes/任务=${N_EPISODES}  n_envs=${N_ENVS}"
 echo "rename：${RENAME_MAP:-无}"
+echo "额外参数：${EXTRA_ARGS:-无}"
 echo "输出：${OUT_ROOT}"
 
 for i in "${!SUITE_ARR[@]}"; do
@@ -108,6 +112,7 @@ for i in "${!SUITE_ARR[@]}"; do
         --eval.batch_size="${N_ENVS}" \
         --seed="${SEED}" \
         --output_dir="${OUT_ROOT}/${shard}" \
+        "${EXTRA_ARR[@]}" \
         > "${log}" 2>&1 &
     PIDS+=($!)
 done

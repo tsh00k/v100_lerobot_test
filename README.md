@@ -80,24 +80,43 @@ r = 32。
 | LeRobot 默认 | 55 |
 | LeRobot 去掉 state 拼接 + 末尾换行 | 14（与 openpi 逐个 token 一致） |
 
-仿真这一侧，LeRobot 和 openpi 是一致的：开局等待 10 步、图像旋转 180°、state 取 eef 位置 + axis-angle + 夹爪。
+仿真这一侧，LeRobot 和 openpi 是一致的：开局等待 10 步、图像旋转 180°、state 取 eef 位置 + axis-angle + 夹爪。详细的源码证据见 [docs/state_input.md](docs/state_input.md)。
 
-**验证**：权重不变，只重建 processor（[`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py)，构建方式与 `lerobot-train` 一致），一次只改一个变量：
+**第三个不一致：动作 chunk 长度。** openpi 训练 `pi05_libero` 用的是 `action_horizon=10`，评测时每 5 步重新规划一次（`examples/libero/main.py` 中 `replan_steps=5`）。LeRobot 给这个 checkpoint 配的却是 `chunk_size=50`、`n_action_steps=10`。pi0.5 的所有动作 token 在同一次去噪里生成，彼此之间做双向注意力（LeRobot `modeling_pi05.py` 中 `att_masks = [1] + [0] * (chunk_size - 1)`）。所以多出来的 40 个位置不只是没用，它们训练时从没出现过，还会通过注意力干扰前 10 步。这两项在评测时都能通过 `--policy.chunk_size` / `--policy.n_action_steps` 覆盖，不用重新训练。
 
-| checkpoint | 统计量 | prompt | 开环 L1² | Spatial | Object | Goal | Long | 平均 |
-|---|---|---|---|---|---|---|---|---|
-| `pi05_libero_base`（原样） | 无 | LeRobot | TBD | TBD | TBD | TBD | TBD | TBD |
-| + LIBERO 统计量 | ✓ | LeRobot | TBD | 87.6 | 90.6 | 80.6 | 25.2 | 71.0 |
-| + LIBERO 统计量 + openpi prompt | ✓ | openpi | TBD | TBD | TBD | TBD | TBD | TBD |
-| openpi 官方报告 | ✓ | openpi | — | 98.8 | 98.2 | 98.0 | 92.4 | 96.9 |
+**验证**：权重不变，只重建 processor（[`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py)，构建方式与 `lerobot-train` 一致），或者覆盖评测参数，一次只改一个变量。先用最难的 Long 套件快速筛选（每个任务 10 个 episode）：
+
+| checkpoint | 统计量 | prompt | chunk / 执行 | Long（快速³） |
+|---|---|---|---|---|
+| `pi05_libero_base`（原样） | 无 | LeRobot | 50 / 10 | 0.0 |
+| + LIBERO 统计量 | ✓ | LeRobot | 50 / 10 | 25.2⁴ |
+| + LIBERO 统计量 + openpi prompt | ✓ | openpi | 50 / 10 | 32.0 |
+| + LIBERO 统计量 + openpi prompt + openpi horizon | ✓ | openpi | 10 / 5 | TBD |
+| `pi05_libero_finetuned`（锚点，在 LeRobot 里训练） | ✓ | LeRobot | 50 / 50 | 85.0 |
+| openpi 官方报告 | ✓ | openpi | 10 / 5 | 92.4 |
+
+³ 每个任务 10 个 episode，共 100 个，95% 置信区间约 ±7–9 个百分点。⁴ 这一行是完整评测（每个任务 50 个 episode）的结果。
+
+完整评测（四个套件 × 10 个任务 × 50 个 episode）：
+
+| checkpoint | 开环 L1² | Spatial | Object | Goal | Long | 平均 |
+|---|---|---|---|---|---|---|
+| `pi05_libero_base`（原样） | TBD | TBD | TBD | TBD | TBD | TBD |
+| + LIBERO 统计量 | TBD | 87.6 | 90.6 | 80.6 | 25.2 | 71.0 |
+| + 统计量 + openpi prompt + horizon | TBD | TBD | TBD | TBD | TBD | TBD |
+| openpi 官方报告 | — | 98.8 | 98.2 | 98.0 | 92.4 | 96.9 |
 
 ² 不跑仿真：在数据集的 200 帧上，比较预测的首步动作与示教动作，取逐维 L1 误差的均值（真实尺度）。
 
-补上统计量后，平均成功率达到 71.0%，但 Long 只有 25.2%（10 个任务分别为 30 / 22 / 8 / 58 / 10 / 80 / 0 / 12 / 4 / 28）。
+目前的结论：
+- **统计量是必要条件**。没有统计量时，Long 是 0%；补上之后，四个套件平均 71.0%，但 Long 只有 25.2%（10 个任务分别为 30 / 22 / 8 / 58 / 10 / 80 / 0 / 12 / 4 / 28）。
+- **prompt 格式有帮助，但不是主要原因**：Long 从 25.2 提到 32.0。不过 32.0 是快速评测的结果，误差范围内的提升还不能下定论。
+- **差距的根源是训练和评测不一致，不是"全量微调 vs 其他"**。`pi05_libero_base` 和锚点都是全量微调得到的，锚点在 LeRobot 里训练、在 LeRobot 里评测，没有不一致，Long 达到 85.0。
+- 锚点的快速评测比官方报告（96.0）低约 11 个百分点，超出了统计误差。可能是本仓库的评测条件造成的（fp32 推理、OSMesa 渲染、关闭 torch.compile），需要完整评测确认。
 
-<!-- TODO: 结论。其余已知差异：openpi 每 5 步重新规划（这里 n_action_steps=10）；动作统计量来自 physical-intelligence/libero 而非 HuggingFaceVLA/libero；bf16 → fp32 -->
+<!-- TODO: horizon 对齐后的结果与最终结论；剩余已知差异：动作统计量来自 physical-intelligence/libero 而非 HuggingFaceVLA/libero；bf16 → fp32 -->
 
-这一点对本仓库自己的实验也有影响：从 `pi05_base` 训练时，统计量会写进保存的 checkpoint，所以评测自己训的模型不受第一个问题影响。prompt 格式则在训练和评测时保持一致，都用 LeRobot 默认格式。
+对本仓库自己的实验，这三个问题都不存在：从 `pi05_base` 开始训练时，统计量、prompt 格式和 `chunk_size` 都写进保存的 checkpoint，训练和评测用的是同一套设置。`n_action_steps` 只在评测时起作用，训练完后可以单独扫描。
 
 ## 复现
 
@@ -115,7 +134,8 @@ make norm-stats                            # 诊断：pi05_libero_base + LIBERO 
 make norm-stats OPENPI_PROMPT=1 CHECK=200  # 再加 openpi prompt，并做三者开环对比
 make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw
 make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
-make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_prompt
+make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_all \
+     EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"
 
 make train JOB_NAME=r32_default                         # 主实验
 make train JOB_NAME=r8_default  LORA_R=8                # rank 消融

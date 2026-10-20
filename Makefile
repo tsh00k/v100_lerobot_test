@@ -18,6 +18,8 @@
 #             make eval POLICY_PATH=lerobot/pi05_libero_base NAME=libero_base_raw N_EPISODES=10
 #             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_with_stats NAME=libero_base_stats
 #             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_prompt
+#             make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_prompt NAME=libero_base_openpi_all \
+#                  EXTRA_ARGS="--policy.chunk_size=10 --policy.n_action_steps=5"   # 再对齐 openpi 的 horizon/replan
 #   1. 基线   make eval
 #   2. 主实验 make train JOB_NAME=r32_default
 #   3. rank   make train JOB_NAME=r8_default  LORA_R=8
@@ -33,7 +35,7 @@ export STEPS JOB_NAME NUM_GPUS BATCH_SIZE LR LORA_R SAVE_FREQ LOG_FREQ OUTPUT_DI
 export POLICY_PATH RENAME_MAP LORA_TARGETS
 export WANDB WANDB_PROJECT
 export HF_MODEL_ID LOCAL_CHECKPOINT DEVICE TASK
-export NAME SUITES N_EPISODES N_ENVS TASK_IDS GPUS SEED OUT_ROOT
+export NAME SUITES N_EPISODES N_ENVS TASK_IDS GPUS SEED OUT_ROOT EXTRA_ARGS
 
 SMOKE_STEPS    := $(or $(STEPS),20)
 SMOKE_EPISODES := [0,1,2,3,4,5,6,7,8,9]
