@@ -43,7 +43,7 @@ export NAME SUITES N_EPISODES N_ENVS TASK_IDS GPUS SEED OUT_ROOT EXTRA_ARGS
 SMOKE_STEPS    := $(or $(STEPS),20)
 SMOKE_EPISODES := [0,1,2,3,4,5,6,7,8,9]
 
-.PHONY: help check data infer smoke train eval norm-stats
+.PHONY: help check data infer smoke train eval norm-stats net-check
 
 help:
 	@grep -E '^#' Makefile | sed 's/^# \{0,1\}//'
@@ -83,3 +83,6 @@ eval:
 norm-stats:
 	CUDA_VISIBLE_DEVICES=$(or $(firstword $(GPUS)),0) python scripts/attach_norm_stats.py --check $(or $(CHECK),0) \
 	  $(if $(OPENPI_PROMPT),--openpi-prompt) $(if $(OPENPI_STATS),--openpi-stats)
+
+net-check:
+	bash scripts/net_check.sh
