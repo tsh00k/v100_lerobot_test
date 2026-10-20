@@ -31,20 +31,21 @@ def main(mon: Path, target_steps: int) -> None:
         step_s = updt + data
         mem = max((float(w[3]) for w in windows if w[3]), default=float("nan"))
         lines += [
-            "| 指标 | 值 |", "|---|---|",
-            f"| 稳态 s/step（updt + data，最慢 rank） | **{step_s:.3f}** |",
-            f"| 其中 updt_s / data_s | {updt:.3f} / {data:.3f} |",
-            f"| 首个窗口 s/step（含预热） | {float(windows[0][1]) + float(windows[0][2]):.3f} |",
-            f"| 统计窗口数（稳态 / 总） | {len(steady)} / {len(windows)} |",
-            f"| torch 峰值显存 max_memory_allocated（GB） | {mem:.2f} |",
-            f"| 估算 {target_steps} 步耗时（h，不含加载/保存） | {step_s * target_steps / 3600:.1f} |",
+            # 输出用英文：tmux / 终端 locale 不是 UTF-8 时中文会显示成 "_"
+            "| metric | value |", "|---|---|",
+            f"| steady s/step (updt + data, slowest rank) | **{step_s:.3f}** |",
+            f"| updt_s / data_s | {updt:.3f} / {data:.3f} |",
+            f"| first window s/step (warm-up) | {float(windows[0][1]) + float(windows[0][2]):.3f} |",
+            f"| log windows (steady / total) | {len(steady)} / {len(windows)} |",
+            f"| torch peak mem, max_memory_allocated (GB) | {mem:.2f} |",
+            f"| est. {target_steps} steps (h, excl. load/save) | {step_s * target_steps / 3600:.1f} |",
         ]
     else:
-        lines += ["train.log 里没有找到 updt_s / data_s 行（LOG_FREQ 是否大于总步数？）", ""]
+        lines += ["no updt_s / data_s lines in train.log (LOG_FREQ > total steps?)", ""]
 
     wall = mon / "wall_s"
     if wall.exists():
-        lines.append(f"| 整次运行墙钟时间（min） | {int(wall.read_text()) / 60:.1f} |")
+        lines.append(f"| wall time of whole run (min) | {int(wall.read_text()) / 60:.1f} |")
 
     gpu = mon / "gpu.csv"
     if gpu.exists():
@@ -56,8 +57,8 @@ def main(mon: Path, target_steps: int) -> None:
             mem_peak[i] = max(mem_peak[i], m)
             if m > 2000:  # 只统计模型已加载、在训练中的采样点
                 util[i].append(u)
-        lines += ["", "nvidia-smi（含 CUDA 上下文和缓存，比 torch 的数字大）：", "",
-                  "| GPU | 峰值显存（GiB） | 平均利用率（%） |", "|---|---|---|"]
+        lines += ["", "nvidia-smi (incl. CUDA context + allocator cache, larger than torch's number):", "",
+                  "| GPU | peak mem (GiB) | mean util (%) |", "|---|---|---|"]
         for i in sorted(mem_peak):
             avg = sum(util[i]) / len(util[i]) if util[i] else 0
             lines.append(f"| {i} | {mem_peak[i] / 1024:.1f} | {avg:.0f} |")
@@ -75,12 +76,12 @@ def main(mon: Path, target_steps: int) -> None:
                 if total > 0:
                     busy.append(100 * (total - idle) / total)
             load = [float(r[2]) for r in rows]
-            lines += ["", "主机（整机，含其他用户进程）：", "",
-                      "| 指标 | 平均 | 峰值 |", "|---|---|---|",
-                      f"| CPU 利用率（%，全部核） | {sum(busy) / len(busy):.0f} | {max(busy):.0f} |" if busy
-                      else "| CPU 利用率（%） | 采样点不足 | |",
-                      f"| 1 分钟负载（核数 {os.cpu_count()}） | {sum(load) / len(load):.1f} | {max(load):.1f} |",
-                      f"| 已用内存（GiB） | {sum(int(r[1]) for r in rows) / len(rows) / 1024:.1f} | {max(int(r[1]) for r in rows) / 1024:.1f} |"]
+            lines += ["", "host (whole machine, incl. other users):", "",
+                      "| metric | mean | peak |", "|---|---|---|",
+                      f"| CPU util (%, all cores) | {sum(busy) / len(busy):.0f} | {max(busy):.0f} |" if busy
+                      else "| CPU util (%) | too few samples | |",
+                      f"| load avg 1m ({os.cpu_count()} cores) | {sum(load) / len(load):.1f} | {max(load):.1f} |",
+                      f"| used RAM (GiB) | {sum(int(r[1]) for r in rows) / len(rows) / 1024:.1f} | {max(int(r[1]) for r in rows) / 1024:.1f} |"]
 
     text = "\n".join(lines)
     print(text)

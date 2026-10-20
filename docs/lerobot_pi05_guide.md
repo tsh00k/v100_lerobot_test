@@ -187,6 +187,8 @@ accelerate launch --multi_gpu --num_processes=6 --mixed_precision=no \
 
 ### 3.3 pi0.5 默认的 LoRA 作用位置
 
+源码在 `modeling_pi05.py:1098`。
+
 `PI05Policy._get_default_peft_targets()`（`modeling_pi05.py`）：
 
 ```python
@@ -195,12 +197,50 @@ target_modules = r"(.*\.gemma_expert\..*\.self_attn\.(q|v)_proj|model\.(state_pr
 
 也就是说默认**只在 action expert 的 q/v 投影和动作相关的投影层上加 LoRA**，PaliGemma 主干和视觉编码器保持冻结。想让主干也参与适配，可以用 `--peft.target_modules` 自己写正则。
 
+目前可配置的三种设置是从小到大包含的关系：
+
+| 设置 | 作用位置 | 层数 |
+|---|---|---|
+| default | expert 的 q/v + 动作输入/输出投影 | 38 |
+| expert | expert 的全部注意力（q/k/v/o）和 MLP + 4 个动作/时间投影 | 130 |
+| all | expert + PaliGemma 语言主干（视觉编码器始终冻结） | 256 |
+
+所以 default 是最小的一档，参数最少、最省显存，也是 LeRobot 官方的默认值，拿它当主实验最自然。
+
 ### 3.4 显存（V100 32GB，fp32）
 
 - 权重约 16.5 GB/卡，这部分是固定开销
 - LoRA 参数和对应的优化器状态都很小
 - 剩下的显存主要用在激活值上：`gradient_checkpointing=true` 能显著降低，`batch_size` 从 4 开始试，OOM 就减半
 - 以上是估算，实际以冒烟测试的 `nvidia-smi` 为准
+
+**实测**（`make smoke`，2026-10-20；`pi05_base`、r=32、default、chunk 10/5、6 卡 × batch 4 = 24）：
+
+| 指标 | 值 |
+|---|---|
+| 稳态每步耗时 | **7.61 s/step**（`updt_s` 7.60 + `data_s` 0.008，最慢 rank） |
+| 吞吐 | 约 3.2 样本/秒 |
+| 首个日志窗口 | 37 s/step（含 cudnn 预热和 dataloader 启动，不计入估算） |
+| torch 峰值显存 `max_memory_allocated` | 17.8 GB/卡 |
+| nvidia-smi 显存 | 约 29 GiB/卡（含 CUDA 上下文和分配器缓存，所以比 torch 的数字大） |
+| GPU 利用率 | 74–87% |
+| CPU 利用率（整机 80 核） | 平均 9%，峰值 21% |
+| 主机内存（整机，含其他用户） | 平均 66 GiB，峰值 120 GiB |
+
+`data_s` 几乎为 0，瓶颈在 GPU 计算，加 `num_workers` 没有用。
+
+**训练时间估算**（只用 s/step 推算，不含模型加载、保存 checkpoint 和评测）：
+
+| 实验 | 每步耗时 | 30k 步 | 依据 |
+|---|---|---|---|
+| r32_default（主实验） | 7.6 s | **约 63 h** | 实测 |
+| r8 / r64，default | ≈7.6 s | 各约 63 h | 推断：LoRA 的 rank 对计算量影响很小 |
+| r32_expert | ≈1.2–1.5× | 约 80–95 h | 推断，开训前用 `make smoke LORA_TARGETS=expert` 实测 |
+| r32_all | ≈1.5–2× | 约 95–130 h | 推断：要反传过 2B 的语言主干，batch 4 下可能 OOM，需 smoke 确认 |
+
+- 每次完整评测（4 个套件 × 50 个 episode）另需约 3.5 h（5 卡）。
+- 5 个实验全按 30k 步跑合计约 370–410 h（约 16 天独占 6 卡）。所以目前只跑 r32_default 30k 步 + 完整评测；消融以后再定。如果要做，可以把所有消融统一缩到 10k 步（含一个同条件的 r32_default@10k 基准；不能直接拿 30k 训练中途的 10k checkpoint，因为学习率调度不同），合计约 130 h。
+- 30k 步 × 24 = 72 万样本，约 2.6 个 epoch（数据集 27.3 万帧）。openpi 的 `pi05_libero` 是 30k 步 × batch 32。
 
 ### 3.5 chunk_size 为什么用 10（源码确认 + 推断）
 
@@ -288,6 +328,8 @@ make net-check                 # 需要联网时先检查隧道；全部缓存�
 make smoke
 # 想让估算更准，可以多跑几步，并按计划的正式步数估算：
 make smoke STEPS=60 TARGET_STEPS=30000
+make smoke JOB_NAME=smoke_expert LORA_TARGETS=expert
+make smoke JOB_NAME=smoke_all    LORA_TARGETS=all
 ```
 
 结束时会打印 `s/step` 表格（也在 `outputs/pi05_smoke_*.monitor/summary.md`）。用稳态 s/step 定正式训练的步数预算；改了 `BATCH_SIZE` 或 `LORA_TARGETS` 要重新测，因为每步耗时会变。
