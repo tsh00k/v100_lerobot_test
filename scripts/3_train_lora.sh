@@ -39,6 +39,7 @@ SAVE_FREQ="${SAVE_FREQ:-5000}"         # 最后一步无论如何都会保存
 LOG_FREQ="${LOG_FREQ:-50}"
 WANDB="${WANDB:-true}"                 # 需要 WANDB_API_KEY（或 wandb login）
 WANDB_PROJECT="${WANDB_PROJECT:-pi05_v100}"
+WANDB_MODE="${WANDB_MODE:-online}"          # online / offline / disabled
 EPISODES="${EPISODES:-}"               # 如 "[0,1,2]"；只下载/使用这些 episode。留空 = 全量（35 GB）
 
 # pi05_base：通用预训练，未见过 LIBERO（实验的起点）
@@ -47,6 +48,19 @@ POLICY_PATH="${POLICY_PATH:-lerobot/pi05_base}"
 
 EPISODES_ARG=()
 [[ -n "${EPISODES}" ]] && EPISODES_ARG=(--dataset.episodes="${EPISODES}")
+
+# 离线（HF_HUB_OFFLINE=1）时必须给 --dataset.root：
+#   lerobot 0.6.1 先找 $HF_LEROBOT_HOME/<repo_id>，找不到就调 list_repo_refs 查版本（要联网），
+#   而在线下载的数据实际在 $HF_LEROBOT_HOME/hub/datasets--*/snapshots/<hash>（dataset_metadata.py）。
+#   指定 root 后直接读本地，不再联网。DATASET_ROOT 留空且离线时自动找这个 snapshot。
+DATASET_ROOT="${DATASET_ROOT:-}"
+if [[ -z "${DATASET_ROOT}" && "${HF_HUB_OFFLINE:-0}" == "1" ]]; then
+    _LR_HOME="${HF_LEROBOT_HOME:-${HF_HOME:-$HOME/.cache/huggingface}/lerobot}"
+    DATASET_ROOT=$(ls -d "${_LR_HOME}"/hub/datasets--HuggingFaceVLA--libero/snapshots/*/ 2>/dev/null | head -1)
+    [[ -z "${DATASET_ROOT}" ]] && { echo "❌ 离线模式下没找到数据集缓存，先联网跑一次 make data"; exit 1; }
+fi
+ROOT_ARG=()
+[[ -n "${DATASET_ROOT}" ]] && ROOT_ARG=(--dataset.root="${DATASET_ROOT%/}")
 
 # pi05_base 的相机键名是 base_0_rgb / left_wrist_0_rgb / right_wrist_0_rgb，数据集是 image / image2。
 # 与 openpi 的 LIBERO 映射一致：主相机→base，腕部→left_wrist，right_wrist 缺失时模型自动填空图并 mask。
@@ -84,7 +98,7 @@ fi
 
 echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} targets=${LORA_TARGETS} chunk=${CHUNK_SIZE}/${N_ACTION_STEPS} wandb=${WANDB}(${WANDB_PROJECT})"
 echo "base：${POLICY_PATH}  rename：${RENAME_ARG[*]:-无}"
-echo "episodes：${EPISODES:-全部}"
+echo "episodes：${EPISODES:-全部}  dataset.root：${DATASET_ROOT:-默认（在线）}"
 echo "输出目录：${OUTPUT_DIR}"
 
 # 耗时和资源监控：OUTPUT_DIR 必须由 lerobot 自己创建，所以监控文件放在同级的 .monitor 目录
@@ -132,6 +146,7 @@ accelerate launch \
     \
     --dataset.repo_id=HuggingFaceVLA/libero \
     "${EPISODES_ARG[@]}" \
+    "${ROOT_ARG[@]}" \
     "${RENAME_ARG[@]}" \
     \
     --policy.path="${POLICY_PATH}" \
@@ -157,6 +172,7 @@ accelerate launch \
     \
     --wandb.enable="${WANDB}" \
     --wandb.project="${WANDB_PROJECT}" \
+    --wandb.mode="${WANDB_MODE}" \
     --wandb.disable_artifact=true \
     2>&1 | tee "${MON_DIR}/train.log"
 
