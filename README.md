@@ -1,6 +1,6 @@
 # π0.5 on LIBERO：跨框架复现诊断 + 6× V100 LoRA 微调
 
-openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但转换到 [LeRobot](https://github.com/huggingface/lerobot) 后，在 LeRobot 的评测流程里成功率只有 **0%**（社区报告见 [lerobot#2533](https://github.com/huggingface/lerobot/issues/2533)，本仓库也复现了）。本仓库定位到训练与评测之间的 **4 处不一致**，在**不改动任何权重**的前提下，只重建 checkpoint 的预处理 / 后处理管线，就把最难的 LIBERO-Long 从 **0% 恢复到 45%**（第 4 处修复的结果待测）。
+openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但转换到 [LeRobot](https://github.com/huggingface/lerobot) 后，在 LeRobot 的评测流程里成功率只有 **0%**（社区报告见 [lerobot#2533](https://github.com/huggingface/lerobot/issues/2533)，本仓库也复现了）。本仓库定位到训练与评测之间的 **4 处不一致**，在**不改动任何权重**的前提下，只重建 checkpoint 的预处理 / 后处理管线，就把最难的 LIBERO-Long 从 **0% 恢复到 94%**（快速评测，100 个 episode），与 openpi 官方报告的 92.4% 持平，也高于 LeRobot 官方在 LeRobot 内重新微调的 checkpoint 在同一评测流程下的 85%。
 
 在此基础上，从通用预训练权重 `lerobot/pi05_base` 出发，在 6 张 Tesla V100-32GB 上以 fp32 精度做 LoRA 微调（进行中）。
 
@@ -8,9 +8,13 @@ openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但
 - 修复后的 checkpoint 可以直接交给 `lerobot-eval` 评测，不需要修改 LeRobot 源码。
 - 框架：LeRobot 0.6.1；仿真：[LIBERO](https://libero-project.github.io/)，无头渲染用 OSMesa。
 
-<!-- TODO: rollout GIF -->
+<p align="center">
+  <img src="assets/gifs/libero_10_5_eval_episode_0.gif" width="360" alt="LIBERO-Long task 5 rollout">
+  <br>
+  <em>4 处修复后的 <code>pi05_libero_base</code>，LIBERO-Long 任务 5："pick up the book and place it in the back compartment of the caddy"（成功）。视频按仿真声明的 80 fps 编码，实际控制频率为 20 Hz，所以看起来是 4 倍速。</em>
+</p>
 
-## 诊断：`pi05_libero_base` 为什么在 LeRobot 里是 0%
+## 诊断：`pi05_libero_base` 为什么在 LeRobot 里是 0%，又怎么回到 94%
 
 `lerobot/pi05_libero_base` 是 openpi `pi05_libero` 的 PyTorch 转换版。它的权重没有问题，问题出在 LeRobot 给它配的 processor（输入 / 输出处理管线）和 openpi 训练时用的设置不一样：
 
@@ -30,12 +34,12 @@ openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但
 | `pi05_libero_base`（原样） | 无 | LeRobot | 50 / 10 | 0.0 |
 | + #1 补统计量 | HF | LeRobot | 50 / 10 | 25.2² |
 | + #2 openpi prompt | HF | openpi | 50 / 10 | 32.0 |
-| + #3 openpi horizon | HF | openpi | 10 / 5 | **45.0** |
-| + #4 openpi 统计量 | openpi | openpi | 10 / 5 | TBD |
+| + #3 openpi horizon | HF | openpi | 10 / 5 | 45.0 |
+| + #4 openpi 统计量 | openpi | openpi | 10 / 5 | **94.0** |
 | `pi05_libero_finetuned`（锚点³） | 自带 | LeRobot | 50 / 50 | 85.0 |
 | openpi 官方报告 | openpi | openpi | 10 / 5 | 92.4 |
 
-¹ 每个任务 10 个 episode，共 100 个，95% 置信区间约 ±7–9 个百分点。² 这一行是完整评测（每个任务 50 个 episode）的结果。³ LeRobot 官方在 `pi05_libero` 基础上又全量微调了 6k 步，训练和评测都在 LeRobot 里完成，不存在上述不一致。用它来检验本仓库的评测流程本身是否可信。
+¹ 每个任务 10 个 episode，共 100 个。成功率在 50% 附近时 95% 置信区间约 ±10 个百分点，在 94% 附近约为 [87, 97]。² 这一行是完整评测（每个任务 50 个 episode）的结果。³ LeRobot 官方在 `pi05_libero` 基础上又全量微调了 6k 步，训练和评测都在 LeRobot 里完成，不存在上述不一致。用它来检验本仓库的评测流程本身是否可信。
 
 完整评测（四个套件 × 10 个任务 × 50 个 episode）：
 
@@ -48,14 +52,14 @@ openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但
 
 ⁴ 不跑仿真：在数据集的 200 帧上，比较预测的首步动作与示教动作，取逐维 L1 误差的均值（真实尺度）。
 
-**目前的结论**
-- **统计量是必要条件**。没有统计量时 Long 是 0%；补上之后，四个套件平均 71.0%，但 Long 只有 25.2%（10 个任务分别为 30 / 22 / 8 / 58 / 10 / 80 / 0 / 12 / 4 / 28）。
-- **prompt 格式有帮助，但不是主要原因**：Long 从 25.2 提到 32.0，还在快速评测的误差范围内。
-- **chunk 长度的影响比 prompt 大**：对齐到 openpi 的 10 / 5 后，从 32.0 提到 45.0。
-- **差距的根源是训练和评测不一致，不是"是否全量微调"**。`pi05_libero_base` 和锚点都是全量微调得到的，锚点不存在这些不一致，Long 达到 85.0。
-- 锚点的快速评测比官方报告（96.0）低约 11 个百分点，超出统计误差，可能和本仓库的评测条件有关（fp32 推理、OSMesa 渲染、关闭 torch.compile），需要完整评测确认。
+**结论**
+- **4 处修复叠加后，权重一点不改，Long 从 0% 恢复到 94.0%**，与 openpi 官方报告的 92.4% 在误差范围内持平。逐任务成功率为 100 / 100 / 100 / 100 / 100 / 90 / 100 / 100 / 50 / 100；修复前一直是 0% 的任务 6 现在是 100%，任务 8 也到了 50%。
+- **影响最大的是统计量的来源（#4）**，单这一项就把 Long 从 45 提到 94。只补上 HF 数据集的统计量（#1）虽然能让模型动起来，但 action 区间偏窄，动作被系统性缩小，长时序任务大量失败。
+- **统计量是否存在（#1）是前提**：没有统计量时是 0%，补上后四个套件平均 71.0%。
+- **chunk 长度（#3）的影响比 prompt 格式（#2）大**：分别贡献 +13 和 +7 个点。#2 那一步还在快速评测的误差范围内。
+- **差距的根源是训练和评测不一致，不是"是否全量微调"**。修复后的 `pi05_libero_base` 比在 LeRobot 内重新微调的锚点（85.0）还高。这也说明本仓库的评测条件（fp32 推理、OSMesa 渲染、关闭 torch.compile）可以复现官方水平；锚点偏低更可能是那个 checkpoint 本身的问题。
 
-<!-- TODO: #4 的结果与最终结论；剩余已知差异：图像 resize 顺序（openpi 先 resize_with_pad 到 224 再转 uint8）；bf16 → fp32 -->
+<!-- TODO: #1–#4 的完整四套件评测；剩余已知差异（影响应该已经很小）：图像 resize 顺序、bf16 → fp32 -->
 
 ### 各项不一致的细节
 
