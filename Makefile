@@ -53,10 +53,15 @@ check:
 
 # 多卡训练时其他进程会在屏障处等主进程下载数据集，下载过慢会触发 NCCL 超时，所以先单独下好。
 # 下载可断点续传，中断后重跑即可。
+# 离线（HF_HUB_OFFLINE=1）时直接读 hub 缓存里的 snapshot，原因同 3_train_lora.sh 的 DATASET_ROOT。
 data:
-	python -c "import json, os; from lerobot.datasets.lerobot_dataset import LeRobotDataset as D; \
-	e = os.environ.get('EPISODES'); d = D('HuggingFaceVLA/libero', episodes=json.loads(e) if e else None); \
-	print(d.num_episodes, 'episodes', d.num_frames, 'frames')"
+	python -c "import glob, json, os; from lerobot.datasets.lerobot_dataset import LeRobotDataset as D; \
+	from lerobot.utils.constants import HF_LEROBOT_HOME as H; \
+	e = os.environ.get('EPISODES'); \
+	r = os.environ.get('DATASET_ROOT') or (sorted(glob.glob(f'{H}/hub/datasets--HuggingFaceVLA--libero/snapshots/*'))[:1] or [None])[0] \
+	    if os.environ.get('HF_HUB_OFFLINE') == '1' else os.environ.get('DATASET_ROOT') or None; \
+	d = D('HuggingFaceVLA/libero', root=r, episodes=json.loads(e) if e else None); \
+	print(d.num_episodes, 'episodes', d.num_frames, 'frames', '| root:', d.root)"
 
 infer:
 	python scripts/2_inference.py
