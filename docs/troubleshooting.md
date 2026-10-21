@@ -86,3 +86,53 @@ echo n | python -c "import libero.libero"
 ```
 
 另外，场景资产（约 600 个文件）第一次用时会从 HF Hub 下载到 `~/.cache/libero/assets`，需要联网（走代理）。
+
+## 4. 训练中途崩溃：GPU 3 不可纠正 ECC 错误
+
+### 现象
+
+`r32_default` 跑到第 5350 步（约 11 小时）时崩溃，之后 smoke 一启动就在 barrier 处崩：
+
+```
+[rank3]: RuntimeError: CUDA error: uncorrectable ECC error encountered
+terminate called after throwing an instance of 'c10::Error'
+... exitcode: -6 ... Signal 6 (SIGABRT) received by PID ...
+```
+
+### 原因
+
+硬件问题，和代码、网络无关。`nvidia-smi` 显示只有 GPU 3 有 1 个不可纠正错误，坏页处于"待屏蔽"状态：
+
+```bash
+nvidia-smi --query-gpu=index,ecc.errors.uncorrected.volatile.total,retired_pages.pending --format=csv
+# 3, 1, Yes      其余卡为 0, No
+```
+
+坏页要等 GPU 重置或驱动重载后才会真正被屏蔽。这台机器的 8 张 V100 通过 NVLink 互联，只能 8 张一起重置，而另外两张卡在被别人使用，所以暂时没法重置。在这之前 GPU 3 一用就会再次出错。
+
+### 解决
+
+- 跳过 GPU 3。脚本默认值不变，只在 `Makefile` 顶部覆盖：`GPUS ?= 0 1 2 4 5`、`BATCH_SIZE ?= 5`。训练变成 5 卡 × batch 5 = 25，评测的 5 个分片也落在这 5 张卡上。GPU 恢复后删掉这两行。
+- 从最近的 checkpoint 续训：`make train RESUME=outputs/<run> AUTO_RESUME=10`。续训时会用 `--batch_size` 覆盖 checkpoint 里存的值；有效 batch 和原来不同时，LeRobot 会提示数据顺序只能近似接上，README 里要写明。
+- 降低损失：`SAVE_FREQ` 改为 1000（LoRA checkpoint 每个约 30 MB），并加了 `AUTO_RESUME` 自动续训，见 `docs/lerobot_pi05_guide.md` 3.6 节。
+- 0.6.1 没有梯度累积参数，所以没法在卡数变少时用累积凑回原来的 batch。
+
+## 5. `HF_HUB_OFFLINE=1` 时找不到数据集：`meta/info.json` 不存在
+
+### 现象
+
+在线时 `make data` / `make smoke` 都正常，设了 `HF_HUB_OFFLINE=1` 后：
+
+```
+FileNotFoundError: ... /root/data1/tsh/hf_cache/lerobot/HuggingFaceVLA/libero/meta/info.json
+...
+huggingface_hub.errors.OfflineModeIsEnabled: Cannot reach https://huggingface.co/api/datasets/HuggingFaceVLA/libero/refs
+```
+
+### 原因
+
+数据其实已经下全了（33 GB），但放在 `$HF_LEROBOT_HOME/hub/datasets--HuggingFaceVLA--libero/snapshots/<hash>/`。LeRobot 0.6.1 不传 `root` 时先找 `$HF_LEROBOT_HOME/HuggingFaceVLA/libero/`（`datasets/dataset_metadata.py`），找不到就调用 `list_repo_refs` 联网查版本，再用 `snapshot_download` 定位到 hub 缓存。离线时查版本这一步直接失败。
+
+### 解决
+
+离线时显式传 `--dataset.root=<snapshot 目录>`，LeRobot 就直接读本地。`scripts/3_train_lora.sh` 和 `make data` 在 `HF_HUB_OFFLINE=1` 时会自动找到这个目录（也可以用 `DATASET_ROOT` 手动指定）。续训时 `root` 已经存在 checkpoint 的 `train_config.json` 里，不需要再传。

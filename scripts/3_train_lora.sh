@@ -23,7 +23,15 @@
 
 set -euo pipefail
 
-NUM_GPUS="${NUM_GPUS:-6}"
+# 用 GPUS 选卡（与 4_eval_libero.sh 一致）；NUM_GPUS 默认等于 GPUS 的张数，小于时取前 NUM_GPUS 张。
+# 已设置 CUDA_VISIBLE_DEVICES 时以它为准。
+GPUS="${GPUS:-0 1 2 3 4 5}"
+read -r -a _GPU_ARR <<< "${GPUS}"
+NUM_GPUS="${NUM_GPUS:-${#_GPU_ARR[@]}}"
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${_GPU_ARR[*]:0:${NUM_GPUS}}")
+    export CUDA_VISIBLE_DEVICES
+fi
 BATCH_SIZE="${BATCH_SIZE:-4}"          # 每卡；有效 batch = BATCH_SIZE × NUM_GPUS
 STEPS="${STEPS:-30000}"
 LR="${LR:-1e-4}"                       # LoRA 常用比全量微调（pi05 默认 2.5e-5）更大的 lr
@@ -180,12 +188,13 @@ TRAIN_ARGS=(
 # checkpoint 的 train_config.json 读取（configs/train.py 的 _resolve_resume_checkpoint）。
 # wandb.run_id 已存在 config 里，wandb 会以 resume="must" 接回原来的页面（common/wandb_utils.py）。
 # 优化器、学习率调度、步数、RNG 从 checkpoints/last/training_state 恢复（load_training_state）。
-# --save_freq 是 CLI 覆盖（train.py：CLI --* flags still override），方便给旧 run 调小保存间隔。
-# 注意：NUM_GPUS × BATCH_SIZE 应与原 run 相同，否则数据顺序只能近似接上（lerobot_train.py 会告警）。
+# --save_freq / --batch_size 是 CLI 覆盖（train.py：CLI --* flags still override），方便给旧 run 调小保存间隔、换卡数。
+# 注意：NUM_GPUS × BATCH_SIZE 与原 run 不同时，数据顺序只能近似接上（lerobot_train.py 会告警）。
 resume_args() {
     TRAIN_ARGS=(--resume=true
                 --config_path="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
-                --save_freq="${SAVE_FREQ}")
+                --save_freq="${SAVE_FREQ}"
+                --batch_size="${BATCH_SIZE}")
 }
 TEE_ARG=()
 if [[ -n "${RESUME}" ]]; then

@@ -34,6 +34,13 @@
 
 SHELL := /bin/bash
 
+# 本机硬件情况（脚本默认值不动，只在这里覆盖；命令行传值仍然优先）：
+#   GPU 3 自 2026-10-21 起出现不可纠正 ECC 错误，一用就崩，见 docs/troubleshooting.md 第 4 节。
+#   训练 / smoke / 评测都跳过它；训练改为 5 卡 × batch 5 = 25（原 6 × 4 = 24）。
+#   GPU 恢复后删掉这两行即可。
+GPUS       ?= 0 1 2 4 5
+BATCH_SIZE ?= 5
+
 export STEPS JOB_NAME NUM_GPUS BATCH_SIZE LR LORA_R SAVE_FREQ LOG_FREQ OUTPUT_DIR EPISODES
 export POLICY_PATH RENAME_MAP LORA_TARGETS
 export WANDB WANDB_PROJECT
@@ -73,7 +80,7 @@ smoke:
 	STEPS=$(SMOKE_STEPS) \
 	EPISODES='$(or $(EPISODES),$(SMOKE_EPISODES))' \
 	JOB_NAME=$(or $(JOB_NAME),pi05_smoke) \
-	NUM_GPUS=$(or $(NUM_GPUS),6) \
+	NUM_GPUS=$(NUM_GPUS) \
 	LOG_FREQ=$(or $(LOG_FREQ),2) \
 	SAVE_FREQ=$(or $(SAVE_FREQ),$(SMOKE_STEPS)) \
 	MONITOR=$(or $(MONITOR),full) \
