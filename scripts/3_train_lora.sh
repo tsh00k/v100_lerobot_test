@@ -43,7 +43,7 @@ if [[ -n "${RESUME}" ]]; then
         || { echo "❌ ${RESUME}/checkpoints/last 下没有 checkpoint"; exit 1; }
     OUTPUT_DIR="${RESUME}"
 fi
-SAVE_FREQ="${SAVE_FREQ:-5000}"         # 最后一步无论如何都会保存
+SAVE_FREQ="${SAVE_FREQ:-1000}"         # 最后一步无论如何都会保存；LoRA checkpoint 每个约 30 MB
 LOG_FREQ="${LOG_FREQ:-50}"
 WANDB="${WANDB:-true}"                 # 需要 WANDB_API_KEY（或 wandb login）
 WANDB_PROJECT="${WANDB_PROJECT:-pi05_v100}"
@@ -176,26 +176,57 @@ TRAIN_ARGS=(
     --wandb.mode="${WANDB_MODE}"
     --wandb.disable_artifact=true
 )
+# 续训只传 resume + config_path：其余配置（含 output_dir、dataset.root、wandb.run_id）全部从
+# checkpoint 的 train_config.json 读取（configs/train.py 的 _resolve_resume_checkpoint）。
+# wandb.run_id 已存在 config 里，wandb 会以 resume="must" 接回原来的页面（common/wandb_utils.py）。
+# 优化器、学习率调度、步数、RNG 从 checkpoints/last/training_state 恢复（load_training_state）。
+# --save_freq 是 CLI 覆盖（train.py：CLI --* flags still override），方便给旧 run 调小保存间隔。
+# 注意：NUM_GPUS × BATCH_SIZE 应与原 run 相同，否则数据顺序只能近似接上（lerobot_train.py 会告警）。
+resume_args() {
+    TRAIN_ARGS=(--resume=true
+                --config_path="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
+                --save_freq="${SAVE_FREQ}")
+}
 TEE_ARG=()
 if [[ -n "${RESUME}" ]]; then
-    # 续训只传 resume + config_path：其余配置（含 output_dir、dataset.root、wandb.run_id）全部从
-    # checkpoint 的 train_config.json 读取（configs/train.py 的 _resolve_resume_checkpoint）。
-    # wandb.run_id 已存在 config 里，wandb 会以 resume="must" 接回原来的页面（common/wandb_utils.py）。
-    # 优化器、学习率调度、步数、RNG 从 checkpoints/last/training_state 恢复（load_training_state）。
-    # 注意：NUM_GPUS × BATCH_SIZE 应与原 run 相同，否则数据顺序只能近似接上（lerobot_train.py 会告警）。
-    TRAIN_ARGS=(--resume=true --config_path="${RESUME}/checkpoints/last/pretrained_model/train_config.json")
+    resume_args
     TEE_ARG=(-a)
 fi
 
-# accelerate 负责：起 N 个进程、DDP 包装、梯度同步、混合精度
-#   --mixed_precision=no：V100 无 bf16，全程 fp32
-accelerate launch \
-    ${MULTI_GPU_FLAG} \
-    --num_processes="${NUM_GPUS}" \
-    --mixed_precision=no \
-    -m lerobot.scripts.lerobot_train \
-    "${TRAIN_ARGS[@]}" \
-    2>&1 | tee "${TEE_ARG[@]}" "${MON_DIR}/train.log"
+# 自动续训：AUTO_RESUME=<最多重启次数>（默认 0 = 关闭）。训练非 0 退出且已有 checkpoint 时，
+# 等 AUTO_RESUME_WAIT 秒后从 checkpoints/last 重新拉起。用于 GPU 偶发 ECC 错误等硬件故障；
+# 每次最多损失 SAVE_FREQ 步。手动 Ctrl-C 不会触发（退出码 130）。
+AUTO_RESUME="${AUTO_RESUME:-0}"
+AUTO_RESUME_WAIT="${AUTO_RESUME_WAIT:-60}"
+attempt=0
+while true; do
+    # accelerate 负责：起 N 个进程、DDP 包装、梯度同步、混合精度
+    #   --mixed_precision=no：V100 无 bf16，全程 fp32
+    set +e
+    accelerate launch \
+        ${MULTI_GPU_FLAG} \
+        --num_processes="${NUM_GPUS}" \
+        --mixed_precision=no \
+        -m lerobot.scripts.lerobot_train \
+        "${TRAIN_ARGS[@]}" \
+        2>&1 | tee "${TEE_ARG[@]}" "${MON_DIR}/train.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    [[ ${rc} -eq 0 ]] && break
+    echo "❌ 训练退出码 ${rc}（$(date '+%F %T')）" | tee -a "${MON_DIR}/train.log"
+    if (( rc == 130 || attempt >= AUTO_RESUME )) \
+        || [[ ! -f "${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json" ]]; then
+        echo "   不再自动续训（已重启 ${attempt}/${AUTO_RESUME} 次）。手动续训：make train RESUME=${OUTPUT_DIR}"
+        exit "${rc}"
+    fi
+    attempt=$((attempt + 1))
+    echo "🔁 ${AUTO_RESUME_WAIT}s 后自动续训（第 ${attempt}/${AUTO_RESUME} 次），从 $(readlink "${OUTPUT_DIR}/checkpoints/last") 步" \
+        | tee -a "${MON_DIR}/train.log"
+    echo "${attempt},$(date +%s),${rc}" >> "${MON_DIR}/restarts.csv"
+    sleep "${AUTO_RESUME_WAIT}"
+    resume_args
+    TEE_ARG=(-a)
+done
 
 echo $(( $(date +%s) - T0 )) > "${MON_DIR}/wall_s"
 [[ -n "${MON_PID}" ]] && kill "${MON_PID}" 2>/dev/null || true

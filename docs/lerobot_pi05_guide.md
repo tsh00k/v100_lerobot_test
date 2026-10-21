@@ -263,9 +263,11 @@ target_modules = r"(.*\.gemma_expert\..*\.self_attn\.(q|v)_proj|model\.(state_pr
 | `CHUNK_SIZE` / `N_ACTION_STEPS` | 10 / 5 | `--policy.chunk_size` / `--policy.n_action_steps` |
 | `POLICY_PATH` | lerobot/pi05_base | `--policy.path`；为 pi05_base 时自动加相机 rename |
 | `EPISODES` | 全部 | `--dataset.episodes`，如 `[0,1,2]` |
-| `SAVE_FREQ` / `LOG_FREQ` | 5000 / 50 | 保存与日志间隔 |
+| `SAVE_FREQ` / `LOG_FREQ` | 1000 / 50 | 保存与日志间隔（LoRA checkpoint 每个约 30 MB） |
 | `WANDB` | true | 需要 `WANDB_API_KEY` |
 | `MONITOR` | cpu（smoke 为 full） | 资源监控，见下 |
+| `RESUME` | 空 | 原 `OUTPUT_DIR`；从其 `checkpoints/last` 续训，wandb 接回原页面，可同时用 `SAVE_FREQ` 覆盖保存间隔 |
+| `AUTO_RESUME` / `AUTO_RESUME_WAIT` | 0 / 60 | 训练非 0 退出且已有 checkpoint 时最多自动续训几次 / 等待秒数；重启记录在 `.monitor/restarts.csv` |
 
 **耗时与资源监控**：结果写在 `<OUTPUT_DIR>.monitor/`（`OUTPUT_DIR` 必须由 lerobot 自己创建，所以放在同级目录）。训练结束自动运行 `scripts/summarize_train.py` 打印并写入 `summary.md`。
 
