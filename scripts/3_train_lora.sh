@@ -35,6 +35,14 @@ CHUNK_SIZE="${CHUNK_SIZE:-10}"
 N_ACTION_STEPS="${N_ACTION_STEPS:-5}"
 JOB_NAME="${JOB_NAME:-pi05_lora_libero}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/${JOB_NAME}_$(date +%Y%m%d_%H%M%S)}"  # 必须是不存在的目录
+# 断点续训：RESUME=<原 OUTPUT_DIR>，从其 checkpoints/last 继续，监控追加写到原 .monitor
+RESUME="${RESUME:-}"
+if [[ -n "${RESUME}" ]]; then
+    RESUME="${RESUME%/}"
+    [[ -f "${RESUME}/checkpoints/last/pretrained_model/train_config.json" ]] \
+        || { echo "❌ ${RESUME}/checkpoints/last 下没有 checkpoint"; exit 1; }
+    OUTPUT_DIR="${RESUME}"
+fi
 SAVE_FREQ="${SAVE_FREQ:-5000}"         # 最后一步无论如何都会保存
 LOG_FREQ="${LOG_FREQ:-50}"
 WANDB="${WANDB:-true}"                 # 需要 WANDB_API_KEY（或 wandb login）
@@ -136,6 +144,49 @@ if [[ "${MONITOR}" != "off" ]]; then
 fi
 T0=$(date +%s)
 
+TRAIN_ARGS=(
+    --dataset.repo_id=HuggingFaceVLA/libero
+    "${EPISODES_ARG[@]}"
+    "${ROOT_ARG[@]}"
+    "${RENAME_ARG[@]}"
+
+    --policy.path="${POLICY_PATH}"
+    --policy.dtype=float32
+    --policy.gradient_checkpointing=true
+    --policy.optimizer_lr="${LR}"
+    --policy.scheduler_decay_steps="${STEPS}"
+    --policy.push_to_hub=false
+    --policy.chunk_size="${CHUNK_SIZE}"
+    --policy.n_action_steps="${N_ACTION_STEPS}"
+
+    --peft.method_type=LORA
+    --peft.r="${LORA_R}"
+    --peft.lora_alpha="${LORA_R}"
+    "${TARGETS_ARG[@]}"
+
+    --batch_size="${BATCH_SIZE}"
+    --steps="${STEPS}"
+    --save_freq="${SAVE_FREQ}"
+    --log_freq="${LOG_FREQ}"
+    --output_dir="${OUTPUT_DIR}"
+    --job_name="${JOB_NAME}"
+
+    --wandb.enable="${WANDB}"
+    --wandb.project="${WANDB_PROJECT}"
+    --wandb.mode="${WANDB_MODE}"
+    --wandb.disable_artifact=true
+)
+TEE_ARG=()
+if [[ -n "${RESUME}" ]]; then
+    # 续训只传 resume + config_path：其余配置（含 output_dir、dataset.root、wandb.run_id）全部从
+    # checkpoint 的 train_config.json 读取（configs/train.py 的 _resolve_resume_checkpoint）。
+    # wandb.run_id 已存在 config 里，wandb 会以 resume="must" 接回原来的页面（common/wandb_utils.py）。
+    # 优化器、学习率调度、步数、RNG 从 checkpoints/last/training_state 恢复（load_training_state）。
+    # 注意：NUM_GPUS × BATCH_SIZE 应与原 run 相同，否则数据顺序只能近似接上（lerobot_train.py 会告警）。
+    TRAIN_ARGS=(--resume=true --config_path="${RESUME}/checkpoints/last/pretrained_model/train_config.json")
+    TEE_ARG=(-a)
+fi
+
 # accelerate 负责：起 N 个进程、DDP 包装、梯度同步、混合精度
 #   --mixed_precision=no：V100 无 bf16，全程 fp32
 accelerate launch \
@@ -143,38 +194,8 @@ accelerate launch \
     --num_processes="${NUM_GPUS}" \
     --mixed_precision=no \
     -m lerobot.scripts.lerobot_train \
-    \
-    --dataset.repo_id=HuggingFaceVLA/libero \
-    "${EPISODES_ARG[@]}" \
-    "${ROOT_ARG[@]}" \
-    "${RENAME_ARG[@]}" \
-    \
-    --policy.path="${POLICY_PATH}" \
-    --policy.dtype=float32 \
-    --policy.gradient_checkpointing=true \
-    --policy.optimizer_lr="${LR}" \
-    --policy.scheduler_decay_steps="${STEPS}" \
-    --policy.push_to_hub=false \
-    --policy.chunk_size="${CHUNK_SIZE}" \
-    --policy.n_action_steps="${N_ACTION_STEPS}" \
-    \
-    --peft.method_type=LORA \
-    --peft.r="${LORA_R}" \
-    --peft.lora_alpha="${LORA_R}" \
-    "${TARGETS_ARG[@]}" \
-    \
-    --batch_size="${BATCH_SIZE}" \
-    --steps="${STEPS}" \
-    --save_freq="${SAVE_FREQ}" \
-    --log_freq="${LOG_FREQ}" \
-    --output_dir="${OUTPUT_DIR}" \
-    --job_name="${JOB_NAME}" \
-    \
-    --wandb.enable="${WANDB}" \
-    --wandb.project="${WANDB_PROJECT}" \
-    --wandb.mode="${WANDB_MODE}" \
-    --wandb.disable_artifact=true \
-    2>&1 | tee "${MON_DIR}/train.log"
+    "${TRAIN_ARGS[@]}" \
+    2>&1 | tee "${TEE_ARG[@]}" "${MON_DIR}/train.log"
 
 echo $(( $(date +%s) - T0 )) > "${MON_DIR}/wall_s"
 [[ -n "${MON_PID}" ]] && kill "${MON_PID}" 2>/dev/null || true
