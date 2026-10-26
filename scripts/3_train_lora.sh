@@ -92,6 +92,9 @@ fi
 #   default：LeRobot 默认，action expert 的 q/v + action_in/out_proj            （38 层）
 #   expert ：action expert 全部 attn+mlp + 4 个动作/时间投影                     （130 层）
 #   all    ：expert + PaliGemma 语言主干全部 attn+mlp；视觉编码器仍冻结          （256 层）
+#   openpi ：对齐 openpi 的 LoRA（pi0_libero_low_mem_finetune：冻结规则只匹配 .*llm.*）——
+#            expert + 语言主干全部 attn+mlp 挂 LoRA；视觉编码器、多模态投影、4 个动作/时间投影全量训练
+#            （openpi 语言主干 r=16、expert r=32；LeRobot 只能统一一个 r）
 # expert 与 all 只差语言主干，用来做"要不要适配 VLM"的消融。
 LORA_TARGETS="${LORA_TARGETS:-default}"
 _PROJ="action_in_proj|action_out_proj|time_mlp_in|time_mlp_out"
@@ -100,8 +103,22 @@ case "${LORA_TARGETS}" in
     default) TARGETS_ARG=() ;;
     expert)  TARGETS_ARG=(--peft.target_modules="(.*\.gemma_expert\..*\.${_BLOCK}|model\.(${_PROJ}))") ;;
     all)     TARGETS_ARG=(--peft.target_modules="(.*\.(gemma_expert|language_model)\..*\.${_BLOCK}|model\.(${_PROJ}))") ;;
-    *) echo "❌ LORA_TARGETS 只能是 default / expert / all"; exit 1 ;;
+    openpi)  TARGETS_ARG=(--peft.target_modules="(.*\.(gemma_expert|language_model)\..*\.${_BLOCK})")
+             FULL_TRAIN_MODULES="${FULL_TRAIN_MODULES:-vision_tower,multi_modal_projector,action_in_proj,action_out_proj,time_mlp_in,time_mlp_out}" ;;
+    *) echo "❌ LORA_TARGETS 只能是 default / expert / all / openpi"; exit 1 ;;
 esac
+# 全量训练的模块（PEFT modules_to_save；LeRobot 字段 --peft.full_training_modules，configs/default.py）。
+#   逗号分隔；PEFT 按模块全名 endswith 匹配（peft/utils/other.py _set_trainable）。留空 = 不额外全量训练。
+FULL_TRAIN_MODULES="${FULL_TRAIN_MODULES:-}"
+if [[ -n "${FULL_TRAIN_MODULES}" ]]; then
+    TARGETS_ARG+=(--peft.full_training_modules="[$(sed 's/[^,][^,]*/"&"/g' <<< "${FULL_TRAIN_MODULES}")]")
+fi
+
+# 训练时图像增强（LeRobot ImageTransformsConfig：亮度/对比度/饱和度/色相/锐度/仿射，每帧随机取 3 种）。
+#   openpi 训练时也做增强（随机裁剪 95% + ±5° 旋转 + 颜色抖动，models/model.py），LeRobot 默认关闭。
+IMAGE_AUG="${IMAGE_AUG:-false}"
+AUG_ARG=()
+[[ "${IMAGE_AUG}" == "true" ]] && AUG_ARG=(--dataset.image_transforms.enable=true)
 
 # 单卡不加 --multi_gpu
 MULTI_GPU_FLAG=""
@@ -112,7 +129,7 @@ if [[ "${WANDB}" == "true" && -z "${WANDB_API_KEY:-}" && ! -f ~/.netrc ]]; then
     exit 1
 fi
 
-echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} targets=${LORA_TARGETS} chunk=${CHUNK_SIZE}/${N_ACTION_STEPS} wandb=${WANDB}(${WANDB_PROJECT})"
+echo "GPUs=${NUM_GPUS} batch/卡=${BATCH_SIZE} steps=${STEPS} lr=${LR} r=${LORA_R} targets=${LORA_TARGETS} full=${FULL_TRAIN_MODULES:-无} aug=${IMAGE_AUG} chunk=${CHUNK_SIZE}/${N_ACTION_STEPS} wandb=${WANDB}(${WANDB_PROJECT})"
 echo "base：${POLICY_PATH}  rename：${RENAME_ARG[*]:-无}"
 echo "episodes：${EPISODES:-全部}  dataset.root：${DATASET_ROOT:-默认（在线）}"
 echo "输出目录：${OUTPUT_DIR}"
@@ -155,6 +172,7 @@ T0=$(date +%s)
 TRAIN_ARGS=(
     --dataset.repo_id=HuggingFaceVLA/libero
     "${EPISODES_ARG[@]}"
+    "${AUG_ARG[@]}"
     "${ROOT_ARG[@]}"
     "${RENAME_ARG[@]}"
 
