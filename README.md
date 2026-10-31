@@ -2,7 +2,7 @@
 
 openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但转换到 [LeRobot](https://github.com/huggingface/lerobot) 后，在 LeRobot 的评测流程里成功率只有 **0%**（社区报告见 [lerobot#2533](https://github.com/huggingface/lerobot/issues/2533)，本仓库也复现了）。本仓库定位到训练与评测之间的 **4 处不一致**，在**不改动任何权重**的前提下，只重建 checkpoint 的预处理 / 后处理管线，就把最难的 LIBERO-Long 从 **0% 恢复到 94%**（快速评测，100 个 episode），与 openpi 官方报告的 92.4% 持平，也高于 LeRobot 官方在 LeRobot 内重新微调的 checkpoint 在同一评测流程下的 85%。
 
-在此基础上，从通用预训练权重 `lerobot/pi05_base` 出发，在 6 张 Tesla V100-32GB 上以 fp32 精度做 LoRA 微调（进行中）。
+在此基础上，从通用预训练权重 `lerobot/pi05_base` 出发，在 Tesla V100-32GB 上以 fp32 精度做 LoRA 微调，LIBERO 四套件平均 **95.8%**（每套件 500 个 episode），接近 openpi 全量微调的官方结果 96.9%。决定成败的是训练范围：LeRobot 默认的 LoRA 只训练 257 万参数，平均只有 17.2%；按 openpi 的 LoRA 做法同时全量训练视觉编码器和动作投影，才到 95.8%。
 
 - 每处不一致都附有源码行号，以及 token 或数值层面的证据；修复逐项叠加，每加一项都在仿真里验证一次。
 - 修复后的 checkpoint 可以直接交给 `lerobot-eval` 评测，不需要修改 LeRobot 源码。
@@ -87,9 +87,9 @@ openpi 官方的 π0.5-LIBERO checkpoint 报告的平均成功率是 96.9%，但
 
 **修复方式**：权重和 `config.json` 原样保留，只用 [`scripts/attach_norm_stats.py`](scripts/attach_norm_stats.py) 另存一份 processor（构建方式与 `lerobot-train` 一致），#3 通过评测参数覆盖。
 
-## LoRA 微调（进行中）
+## LoRA 微调
 
-V100 不支持 bf16。4.1B 参数的模型在 fp32 下做全量微调，单卡放不下一份完整的模型和优化器状态（约 66 GB），所以只训练 LoRA。从 `lerobot/pi05_base` 出发，在 LeRobot 里训练、在 LeRobot 里评测，所以统计量、prompt 格式和 `chunk_size` 都随 checkpoint 一起保存，不会出现上面那些不一致。
+V100 不支持 bf16。4.1B 参数的模型在 fp32 下做全量微调，单卡放不下一份完整的模型和优化器状态（约 66 GB），所以用 LoRA（`openpi` 设置下另外全量训练视觉编码器等少数模块，见下文）。从 `lerobot/pi05_base` 出发，在 LeRobot 里训练、在 LeRobot 里评测，所以统计量、prompt 格式和 `chunk_size` 都随 checkpoint 一起保存，不会出现上面那些不一致。
 
 LIBERO 成功率（%），每个套件 10 个任务 × 50 个 episode：
 
@@ -99,7 +99,8 @@ LIBERO 成功率（%），每个套件 10 个任务 × 50 个 episode：
 | openpi 全量微调（本仓库评测，#1–#4 修复） | pi05_base | 100% | TBD | TBD | TBD | TBD | TBD |
 | LeRobot 全量微调（官方报告） | pi05_libero | 100% | 97.0 | 99.0 | 98.0 | 96.0 | 97.5 |
 | LeRobot 全量微调（本仓库评测） | pi05_libero | 100% | TBD | TBD | TBD | TBD | TBD |
-| **LoRA r=32，default（本仓库）** | pi05_base | TBD | TBD | TBD | TBD | TBD | TBD |
+| LoRA r=32，`default`（本仓库） | pi05_base | 0.06% | 21.6 | 19.4 | 24.2 | 3.4 | 17.2 |
+| **LoRA r=32，`openpi`（本仓库）** | pi05_base | 11.3% | **94.6** | **98.2** | **94.4** | **96.0** | **95.8** |
 
 ### 消融：LoRA rank
 
@@ -108,36 +109,57 @@ LoRA 位置固定为 `default`。
 | r | 可训练参数 | 显存 / 卡 | s / step | Spatial | Object | Goal | Long | 平均 |
 |---|---|---|---|---|---|---|---|---|
 | 8 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 32 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| 32 | 2.6M | 17.8 GB | 7.61 | 21.6 | 19.4 | 24.2 | 3.4 | 17.2 |
 | 64 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
-### 消融：LoRA 作用位置
+r=32 一行的显存和 s/step 是前 5000 步 6 卡 × batch 4 时的数字；之后 5 卡 × batch 5 为 18.3 GB、9.24 s/step（见下方训练设置）。
 
-r = 32。
+### 消融：训练范围（LoRA 作用位置 + 全量训练的模块）
 
-| 位置 | 覆盖的层 | LoRA 层数 | 可训练参数 | 显存 / 卡 | s / step | 平均 |
-|---|---|---|---|---|---|---|
-| `default` | action expert 的 q/v + 动作投影（LeRobot 默认） | 38 | TBD | TBD | TBD | TBD |
-| `expert` | action expert 全部 attn + MLP + 动作/时间投影 | 130 | TBD | TBD | TBD | TBD |
-| `all` | `expert` + PaliGemma 语言主干（视觉编码器冻结） | 256 | TBD | TBD | TBD | TBD |
+r = 32，30k 步。
 
-`expert` 和 `all` 只差语言主干，这一对比用来回答"VLM 主干要不要一起适配"。
+| 设置 | LoRA 覆盖的层 | 全量训练 | 可训练参数 | 显存 / 卡 | s / step | Spatial | Object | Goal | Long | 平均 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `default` | action expert 的 q/v + 动作投影（LeRobot 默认，38 层） | 无 | 2.6M | 17.8 GB | 7.61 | 21.6 | 19.4 | 24.2 | 3.4 | 17.2 |
+| `expert` | action expert 全部 attn + MLP + 动作/时间投影（130 层） | 无 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| `all` | `expert` + PaliGemma 语言主干（256 层） | 无 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| `openpi` | action expert + 语言主干全部 attn + MLP（252 层） | SigLIP 视觉编码器、多模态投影、4 个动作/时间投影 | 470M | 26.7 GB | 11.38 | 94.6 | 98.2 | 94.4 | 96.0 | 95.8 |
 
-<!-- TODO: 结论（每张表 2–3 句），wandb 报告链接 -->
+`openpi` 照搬 openpi 的 LoRA 做法（`pi0_libero_low_mem_finetune`）：冻结规则只匹配 Gemma 的权重（`.*llm.*`，`models/pi0_config.py` 的 `get_freeze_filter`），所以视觉编码器和投影层都在全量训练。openpi 的语言主干用 r=16、action expert 用 r=32，LeRobot 只能统一设成 32。
+
+**结论**
+
+- **LeRobot 默认的 LoRA 对 `pi05_base` 不够用**（实测）。只训练 257 万参数，四套件平均 17.2%，Long 只有 3.4%；训练 loss 停在 0.19。换成 `openpi` 设置后平均 95.8%，与 openpi 全量微调的官方结果 96.9% 只差 1.1 个点，Long（96.0）还高于官方的 92.4。
+- **差距来自哪一项，目前还拆不开**。`openpi` 和 `default` 同时有三处不同：训练范围（多了视觉编码器的全量训练和语言主干的 LoRA）、图像增强（打开）、学习率（2.5e-5 对 1e-4）。**[推断]** 训练范围的影响最大：`pi05_base` 没见过 LIBERO 的画面，视觉编码器冻结时只调 action expert 的 q/v 很难把位置学准；`default` 的 loss 后半程几乎不再下降（5k 步 0.23 → 30k 步 0.19），更像容量不足造成的欠拟合。要拆开需要补 `expert` / `all` 两行，以及在 `openpi` 上去掉图像增强的对照。
+- `openpi` 设置每步慢约 23%（11.38 对 9.24 s/step，都是 5 卡 × batch 5），显存多约 8 GB，单个 checkpoint 从 30 MB 变成 5.3 GB。
+
+<!-- TODO: wandb 报告链接 -->
 
 ### 训练设置
 
+| 项 | `default` | `openpi` |
+|---|---|---|
+| 硬件 | Tesla V100-SXM2-32GB，DDP | 同左 |
+| 精度 | fp32（`accelerate --mixed_precision=no`），gradient checkpointing | 同左 |
+| 起点 | `lerobot/pi05_base` | 同左 |
+| batch | 前 5000 步 4 / 卡 × 6 = 24，之后 5 / 卡 × 5 = 25¹ | 5 / 卡 × 5 = 25 |
+| 步数 | 30k（约 2.7 个 epoch） | 30k |
+| 训练耗时 | 约 75 h（11 h + 64 h） | 约 95 h |
+| 学习率 | 峰值 1e-4 | 峰值 2.5e-5（openpi 默认） |
+| 学习率调度 | warmup 1000 步，cosine 衰减到 2.5e-6 | 同左 |
+| 图像增强 | 关 | 开（LeRobot `image_transforms`：颜色抖动、锐度、仿射） |
+| 最终训练 loss | 0.19 | 0.067 |
+| LoRA | `lora_alpha = r` | 同左 |
+
+¹ 第 5350 步时 GPU 3 出现不可纠正 ECC 错误，此后从第 5000 步的 checkpoint 改用 5 卡续训，见 [docs/troubleshooting.md](docs/troubleshooting.md) 第 4 节。
+
+两次训练共用的设置：
+
 | 项 | 值 |
 |---|---|
-| 硬件 | 6 × Tesla V100-SXM2-32GB，DDP |
-| 精度 | fp32（`accelerate --mixed_precision=no`），gradient checkpointing |
-| 起点 | `lerobot/pi05_base` |
-| batch | 4 / 卡 × 6 = 24 |
-| 步数 | TBD |
-| 学习率 | 1e-4，warmup 1000 步，cosine 衰减 |
-| LoRA | `lora_alpha = r` |
 | 动作 chunk | `chunk_size=10`，每 5 步重新规划（同 openpi 的 LIBERO 配方；`pi05_base` 默认为 50） |
-| 归一化 | state / action 用 LIBERO 数据集统计量做 QUANTILES 归一化 |
+| 归一化 | state / action 用 `HuggingFaceVLA/libero` 数据集统计量做 QUANTILES 归一化（训练和评测用同一份） |
+| prompt | LeRobot 格式，带离散化的 state（openpi 的 `pi05_libero` 不带 state，见 [docs/state_input.md](docs/state_input.md)） |
 | 相机映射 | `image → base_0_rgb`，`image2 → left_wrist_0_rgb`，`right_wrist_0_rgb` 置空并 mask |
 
 ## 复现
@@ -172,7 +194,8 @@ make eval POLICY_PATH=outputs/ckpt/pi05_libero_base_openpi_full NAME=fix1234 "$H
 **LoRA 训练**：
 
 ```bash
-make train JOB_NAME=r32_default                         # 主实验
+make train JOB_NAME=r32_openpi LORA_TARGETS=openpi IMAGE_AUG=true LR=2.5e-5 SAVE_FREQ=2500   # 主实验（95.8%）
+make train JOB_NAME=r32_default                         # LeRobot 默认 LoRA（17.2%）
 make train JOB_NAME=r8_default  LORA_R=8                # rank 消融
 make train JOB_NAME=r64_default LORA_R=64
 make train JOB_NAME=r32_expert  LORA_TARGETS=expert     # 位置消融
